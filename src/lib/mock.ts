@@ -20,7 +20,14 @@ const messages: Message[] = [
     costUsd: 0.0132,
     durationMs: 14200,
     blocks: [
+      { type: "tool", toolUseId: "t0", name: "TodoWrite", input: { todos: [
+        { content: "查两份文档里的付款条款", status: "completed" },
+        { content: "看一下项目里的合同模板", status: "completed" },
+        { content: "整理成对比表", status: "in_progress", activeForm: "正在整理对比表" },
+        { content: "保存成文件", status: "pending" },
+      ] } },
       { type: "text", text: "我先分别查两份文档里的付款条款。" },
+      { type: "tool", toolUseId: "t9", name: "Read", input: { file_path: "/Users/Admin/Desktop/awesome/templates/contract.md" }, result: "# 合同模板\n…" },
       { type: "tool", toolUseId: "t1", name: "mcp__docagent__search_docs", input: { query: "采购合同 付款条款 分期" },
         result: "[1] 《采购合同.pdf》第 3 页\n第三条 付款条款：付款分三期……" },
       { type: "tool", toolUseId: "t2", name: "mcp__docagent__search_docs", input: { query: "服务协议 服务费 支付周期" },

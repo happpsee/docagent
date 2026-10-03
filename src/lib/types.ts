@@ -31,7 +31,7 @@ export type Block =
       result?: string;
       isError?: boolean;
       /** 等待用户审批时带着 requestId；处理完后记录结果 */
-      approval?: { requestId: string; state: "pending" | "allowed" | "denied" };
+      approval?: { requestId: string; state: "pending" | "allowed" | "denied"; canRemember?: boolean };
     };
 
 /** 用户在阅读器里选中的一段原文，随问题一起发给助手 */
@@ -86,6 +86,6 @@ export type AgentEvent =
   | { type: "delta"; id: string; text: string }
   | { type: "tool"; id: string; toolUseId: string; name: string; input: Record<string, unknown> }
   | { type: "tool_result"; id: string; toolUseId: string; text: string; isError: boolean }
-  | { type: "approval_request"; id: string; requestId: string; name: string; input: Record<string, unknown> }
+  | { type: "approval_request"; id: string; requestId: string; name: string; input: Record<string, unknown>; canRemember?: boolean }
   | { type: "result"; id: string; text: string; sessionId: string | null; costUsd: number | null; turns: number | null; hits: Hit[] }
   | { type: "error"; id?: string; message: string };

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronRight, Loader2 } from "lucide-react";
+import { Check, ChevronRight, Circle, Loader2 } from "lucide-react";
 import { citedNumbers } from "@/lib/citations";
 import type { Block, Hit, Message, Quote } from "@/lib/types";
 import { StreamMarkdown } from "./StreamMarkdown";
@@ -20,13 +20,13 @@ interface Props {
   onSend: (q: string) => void;
   onStop: () => void;
   onCite: (hit: Hit) => void;
-  onApproval: (requestId: string, allow: boolean) => void;
+  onApproval: (requestId: string, allow: boolean, remember?: boolean) => void;
   quote: Quote | null;
   onClearQuote: () => void;
   onOpenQuote: (q: Quote) => void;
 }
 
-const SUGGESTIONS = ["这些资料主要讲了什么？", "列出里面所有的金额和期限", "有哪些需要注意的风险点？"];
+const SUGGESTIONS = ["这些资料主要讲了什么？", "帮我看看某个项目的代码结构", "把要点整理成一份文档"];
 
 export function ChatPanel(p: Props) {
   const [input, setInput] = useState("");
@@ -91,7 +91,7 @@ export function ChatPanel(p: Props) {
             </div>
           ) : (
             <p className="mt-4 text-center text-[13px] text-text-3">
-              可以直接聊。点左侧「文档」旁的 + 导入资料后，我会优先从里面找答案并标出出处。
+              可以直接聊，也可以让我读本地项目、整理文件。导入文档后，我会优先从里面找答案并标出出处。
             </p>
           )}
         </div>
@@ -160,16 +160,20 @@ function Assistant({
   m: Message;
   startedAt: number | null;
   onCite: (h: Hit) => void;
-  onApproval: (requestId: string, allow: boolean) => void;
+  onApproval: Props["onApproval"];
 }) {
   const blocks: Block[] = m.blocks?.length ? m.blocks : m.content ? [{ type: "text", text: m.content }] : [];
   const fullText = blocks.map((b) => (b.type === "text" ? b.text : "")).join("\n");
   const cited = citedNumbers(fullText).filter((n) => m.hits?.[n - 1]);
+  const lastTodo = blocks.findLastIndex((b) => b.type === "tool" && b.name === "TodoWrite");
 
   return (
     <div className="flex flex-col gap-2.5">
       {blocks.map((b, i) =>
-        b.type === "text" ? (
+        b.type === "tool" && b.name === "TodoWrite" ? (
+          // 计划会被反复更新，只显示最新的一份
+          i === lastTodo ? <TodoList key={i} input={b.input} /> : null
+        ) : b.type === "text" ? (
           <div key={i} className={`text-[15px] leading-7 ${m.error ? "text-danger" : "text-text"}`}>
             <StreamMarkdown content={b.text} />
           </div>
@@ -234,21 +238,115 @@ function Working({ startedAt }: { startedAt: number | null }) {
   );
 }
 
-/** 一次工具调用：一行摘要，可展开看输入和结果；需要审批时在下面直接给按钮 */
+/** 计划清单（TodoWrite）：做完的打勾，正在做的高亮 */
+function TodoList({ input }: { input: Record<string, unknown> }) {
+  const todos = (input.todos as { content: string; status: string; activeForm?: string }[] | undefined) ?? [];
+  if (!todos.length) return null;
+  const done = todos.filter((t) => t.status === "completed").length;
+  return (
+    <div className="rounded-xl border border-hairline bg-surface-2/60 px-3.5 py-3">
+      <div className="mb-1.5 flex items-center text-[12px] text-text-3">
+        <span className="font-medium text-text-2">计划</span>
+        <span className="num ml-auto">
+          {done} / {todos.length}
+        </span>
+      </div>
+      <ul className="space-y-1">
+        {todos.map((t, i) => (
+          <li key={i} className="flex items-start gap-2 text-[13px] leading-5">
+            {t.status === "completed" ? (
+              <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-good" strokeWidth={2.5} />
+            ) : t.status === "in_progress" ? (
+              <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
+            ) : (
+              <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-4" />
+            )}
+            <span
+              className={
+                t.status === "completed" ? "text-text-4 line-through" : t.status === "in_progress" ? "text-text" : "text-text-2"
+              }
+            >
+              {t.status === "in_progress" ? (t.activeForm ?? t.content) : t.content}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+const tilde = (p: unknown) => String(p ?? "").replace(/^\/Users\/[^/]+/, "~");
+
+/** 每种工具在一行摘要里显示什么 */
+function describe(name: string, input: Record<string, unknown>): { label: string; arg: string; mono?: boolean } {
+  const short = name.replace("mcp__docagent__", "");
+  switch (short) {
+    case "search_docs":
+      return { label: "检索文档", arg: String(input.query ?? "") };
+    case "save_note":
+      return { label: "保存文件", arg: String(input.filename ?? "") };
+    case "Read":
+      return { label: "读取", arg: tilde(input.file_path), mono: true };
+    case "Glob":
+      return { label: "查找文件", arg: `${String(input.pattern ?? "")}${input.path ? `  ·  ${tilde(input.path)}` : ""}`, mono: true };
+    case "Grep":
+      return { label: "搜索内容", arg: `${String(input.pattern ?? "")}${input.path ? `  ·  ${tilde(input.path)}` : ""}`, mono: true };
+    case "Write":
+      return { label: "写入", arg: tilde(input.file_path), mono: true };
+    case "Edit":
+      return { label: "修改", arg: tilde(input.file_path), mono: true };
+    case "Bash":
+      return { label: "运行", arg: String(input.description ?? input.command ?? ""), mono: !input.description };
+    case "WebFetch":
+      return { label: "访问网页", arg: String(input.url ?? "") };
+    default:
+      return { label: short, arg: "" };
+  }
+}
+
+/** 审批卡片上的问法和要给用户看的内容 */
+function approvalCopy(name: string, input: Record<string, unknown>): { title: string; note?: string; body?: string } {
+  const short = name.replace("mcp__docagent__", "");
+  switch (short) {
+    case "Read":
+    case "Glob":
+    case "Grep":
+      return {
+        title: "允许读取这个位置吗？",
+        note: "读到的文件内容会发给模型接口",
+        body: tilde(input._dir ?? input.file_path ?? input.path),
+      };
+    case "Write":
+      return { title: "允许写入这个文件吗？", note: tilde(input.file_path), body: String(input.content ?? "").slice(0, 1500) };
+    case "Edit":
+      return {
+        title: "允许修改这个文件吗？",
+        note: tilde(input.file_path),
+        body: `- ${String(input.old_string ?? "").slice(0, 600)}\n+ ${String(input.new_string ?? "").slice(0, 600)}`,
+      };
+    case "Bash":
+      return { title: "允许运行这条命令吗？", note: input.description ? String(input.description) : undefined, body: String(input.command ?? "") };
+    case "WebFetch":
+      return { title: "允许访问这个网址吗？", body: String(input.url ?? "") };
+    default:
+      return {
+        title: "允许保存这个文件吗？",
+        note: `会写到「文稿/DocAgent/${String(input.filename ?? "")}」`,
+        body: String(input.content ?? "").slice(0, 1500),
+      };
+  }
+}
+
+/** 一次工具调用：一行摘要，可展开看输入和结果；需要许可时在下面直接给按钮 */
 function ToolRow({ b, onApproval }: { b: Extract<Block, { type: "tool" }>; onApproval: Props["onApproval"] }) {
   const [open, setOpen] = useState(false);
-  const short = b.name.replace("mcp__docagent__", "");
-  const isSearch = short === "search_docs";
-  const running = b.result == null && b.approval?.state !== "denied";
-  const label = isSearch ? "检索文档" : short === "save_note" ? "保存文件" : short;
-  const arg = String(isSearch ? (b.input.query ?? "") : (b.input.filename ?? ""));
-  const found = isSearch && b.result ? (b.result.match(/^\[\d+\]/gm)?.length ?? 0) : null;
-
-  const dot = b.isError || b.approval?.state === "denied"
-    ? "bg-danger"
-    : running
-      ? "bg-warm animate-pulse"
-      : "bg-good";
+  const { label, arg, mono } = describe(b.name, b.input);
+  const denied = b.approval?.state === "denied";
+  const running = b.result == null && !denied;
+  const found = b.name.endsWith("search_docs") && b.result ? (b.result.match(/^\[\d+\]/gm)?.length ?? 0) : null;
+  const dot = b.isError || denied ? "bg-danger" : running ? "bg-warm animate-pulse" : "bg-good";
+  const ask = b.approval?.state === "pending" ? approvalCopy(b.name, b.input) : null;
+  const shown = Object.fromEntries(Object.entries(b.input).filter(([k]) => !k.startsWith("_")));
 
   return (
     <div className="text-[13px]">
@@ -257,28 +355,40 @@ function ToolRow({ b, onApproval }: { b: Extract<Block, { type: "tool" }>; onApp
         onClick={() => setOpen((v) => !v)}
       >
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
-        <span className="font-medium">{label}</span>
-        <span className="min-w-0 truncate text-text-3">{arg}</span>
+        <span className="shrink-0 font-medium">{label}</span>
+        <span className={`min-w-0 truncate text-text-3 ${mono ? "num text-[12px]" : ""}`}>{arg}</span>
         {found != null && <span className="num shrink-0 text-[11px] text-text-4">{found} 个片段</span>}
+        {denied && <span className="shrink-0 text-[11px] text-danger">已拒绝</span>}
         <ChevronRight
           className={`ml-auto h-3.5 w-3.5 shrink-0 text-text-4 transition-transform ${open ? "rotate-90" : ""}`}
         />
       </button>
 
-      {b.approval?.state === "pending" && (
+      {ask && (
         <div className="ml-3.5 mt-2 rounded-xl border border-warm-ring bg-warm-tint-faint p-3">
-          <div className="text-[13px] text-text">允许保存这个文件吗？</div>
-          <div className="mt-0.5 text-[12px] text-text-3">会写到「文稿/DocAgent/{arg}」</div>
-          <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md bg-bg p-2.5 text-[12px] leading-5 text-text-2">
-            {String(b.input.content ?? "").slice(0, 1500)}
-          </pre>
-          <div className="mt-2.5 flex justify-end gap-2">
+          <div className="text-[13px] text-text">{ask.title}</div>
+          {ask.note && <div className="mt-0.5 break-all text-[12px] text-text-3">{ask.note}</div>}
+          {ask.body && (
+            <pre className="num mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded-md bg-bg p-2.5 text-[12px] leading-5 text-text-2">
+              {ask.body}
+            </pre>
+          )}
+          <div className="mt-2.5 flex flex-wrap justify-end gap-2">
             <button
               className="arc-btn-secondary rounded-md px-3 py-1.5 text-[12px]"
               onClick={() => onApproval(b.approval!.requestId, false)}
             >
               拒绝
             </button>
+            {b.approval?.canRemember && (
+              <button
+                className="arc-btn-secondary rounded-md px-3 py-1.5 text-[12px]"
+                onClick={() => onApproval(b.approval!.requestId, true, true)}
+                title="这次运行期间，同一位置或同类操作不再询问"
+              >
+                本次都允许
+              </button>
+            )}
             <button
               className="rounded-md bg-text px-3 py-1.5 text-[12px] text-bg"
               onClick={() => onApproval(b.approval!.requestId, true)}
@@ -292,11 +402,11 @@ function ToolRow({ b, onApproval }: { b: Extract<Block, { type: "tool" }>; onApp
       {open && (
         <div className="ml-3.5 mt-1.5 space-y-1.5 border-l border-hairline pl-3">
           <pre className="num whitespace-pre-wrap break-all text-[11px] leading-5 text-text-3">
-            {JSON.stringify(b.input, null, 2).slice(0, 1200)}
+            {JSON.stringify(shown, null, 2).slice(0, 1200)}
           </pre>
           {b.result != null && (
             <pre
-              className={`max-h-64 overflow-y-auto whitespace-pre-wrap rounded-md bg-bg p-2.5 text-[12px] leading-5 ${
+              className={`max-h-64 overflow-y-auto whitespace-pre-wrap break-all rounded-md bg-bg p-2.5 text-[12px] leading-5 ${
                 b.isError ? "text-danger" : "text-text-2"
               }`}
             >

@@ -120,7 +120,18 @@ export function App() {
           });
           break;
         case "tool":
-          patchBlocks((bs) => [...bs, { type: "tool", toolUseId: e.toolUseId, name: e.name, input: e.input }]);
+          patchBlocks((bs) => {
+            // 审批请求可能比这条先到，那时已经放了一个占位块，这里把真实的调用 id 补上
+            const i = bs.findLastIndex(
+              (b) => b.type === "tool" && b.toolUseId.startsWith("ap") && b.name.endsWith(e.name) && b.result == null,
+            );
+            if (i >= 0) {
+              const next = [...bs];
+              next[i] = { ...(next[i] as Extract<Block, { type: "tool" }>), toolUseId: e.toolUseId, name: e.name, input: e.input };
+              return next;
+            }
+            return [...bs, { type: "tool", toolUseId: e.toolUseId, name: e.name, input: e.input }];
+          });
           break;
         case "tool_result":
           patchBlocks((bs) =>
@@ -129,21 +140,21 @@ export function App() {
             ),
           );
           break;
-        case "approval_request":
-          // 挂到对应的那次工具调用上（最近一个同名且还没结果的）
+        case "approval_request": {
+          // 挂到对应的那次工具调用上（最近一个同名、还没结果、还没挂审批的）
+          const approval = { requestId: e.requestId, state: "pending" as const, canRemember: e.canRemember };
           patchBlocks((bs) => {
-            const i = bs.findLastIndex((b) => b.type === "tool" && b.name.endsWith(e.name) && b.result == null);
-            if (i < 0) {
-              return [
-                ...bs,
-                { type: "tool", toolUseId: e.requestId, name: `mcp__docagent__${e.name}`, input: e.input, approval: { requestId: e.requestId, state: "pending" } },
-              ];
-            }
+            const i = bs.findLastIndex(
+              (b) => b.type === "tool" && b.name.endsWith(e.name) && b.result == null && !b.approval,
+            );
+            if (i < 0) return [...bs, { type: "tool", toolUseId: e.requestId, name: e.name, input: e.input, approval }];
             const next = [...bs];
-            next[i] = { ...(next[i] as Extract<Block, { type: "tool" }>), approval: { requestId: e.requestId, state: "pending" } };
+            const cur = next[i] as Extract<Block, { type: "tool" }>;
+            next[i] = { ...cur, input: { ...cur.input, ...e.input }, approval };
             return next;
           });
           break;
+        }
         case "result":
           finish((m) => {
             const hasText = m.blocks?.some((b) => b.type === "text" && b.text.trim());
@@ -350,8 +361,8 @@ export function App() {
     );
   }
 
-  function answerApproval(requestId: string, allow: boolean) {
-    void api.agentSend({ type: "approval", requestId, allow });
+  function answerApproval(requestId: string, allow: boolean, remember = false) {
+    void api.agentSend({ type: "approval", requestId, allow, remember });
     patchBlocks((bs) =>
       bs.map((b) =>
         b.type === "tool" && b.approval?.requestId === requestId

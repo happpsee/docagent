@@ -219,6 +219,25 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
         r3b.answer
     );
 
+    // 4c. 读本地项目：应请求读取许可，放行后能说出代码里的接口
+    let proj = tmp.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("main.py"),
+        "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get(\"/orders/{order_id}\")\ndef get_order(order_id: int):\n    return {\"id\": order_id}\n",
+    )
+    .unwrap();
+    let q = format!("看一下 {} 这个项目，它提供了哪些接口？", proj.display());
+    println!("[问] {q}");
+    let r3c = ask(&root, &api, &config_dir, &q, None, true);
+    println!("[答] {}\n", r3c.answer);
+    assert!(r3c.approvals >= 1, "读本地目录前应请求许可");
+    assert!(
+        r3c.answer.contains("orders"),
+        "应读到代码里的接口：{}",
+        r3c.answer
+    );
+
     // 5. 保存文件：必须先过审批；拒绝后不应落盘
     println!("[问] 把采购合同的付款条款保存成文件（这次拒绝审批）");
     let r4 = ask(

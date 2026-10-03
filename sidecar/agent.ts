@@ -10,7 +10,7 @@
  *
  * 协议（每行一个 JSON）
  *   ← {type:"ask", id, question, sessionId?, docIds?, k?}
- *   ← {type:"approval", requestId, allow}
+ *   ← {type:"approval", requestId, allow, remember?}   remember：本次运行内同类操作不再问
  *   ← {type:"abort", id}
  *   → {type:"ready"}
  *   → {type:"session", id, sessionId}
@@ -63,7 +63,9 @@ function send(obj: Record<string, unknown>) {
   process.stdout.write(`${JSON.stringify(obj)}\n`);
 }
 
-const pendingApprovals = new Map<string, (ok: boolean) => void>();
+const pendingApprovals = new Map<string, (r: { allow: boolean; remember: boolean }) => void>();
+/** 本次运行里用户已经放行的范围：read:<目录>、write:<目录>、bash、web */
+const granted = new Set<string>();
 const aborts = new Map<string, AbortController>();
 /** 每轮提问的上下文：检索范围、取几条、累积命中（给界面做引用用） */
 const asks = new Map<string, { docIds?: string[]; k?: number; hits: Hit[] }>();
@@ -71,12 +73,72 @@ let currentAskId: string | null = null;
 let approvalSeq = 0;
 
 /** 向界面请求审批，等用户点同意或拒绝。没有进行中的提问时一律拒绝。 */
-function requestApproval(name: string, input: Record<string, unknown>): Promise<boolean> {
+async function requestApproval(
+  name: string,
+  input: Record<string, unknown>,
+  grantKey?: string,
+): Promise<boolean> {
   const id = currentAskId;
-  if (!id) return Promise.resolve(false);
+  if (!id) return false;
   const requestId = `ap${++approvalSeq}`;
-  send({ type: "approval_request", id, requestId, name, input });
-  return new Promise<boolean>((resolve) => pendingApprovals.set(requestId, resolve));
+  send({ type: "approval_request", id, requestId, name, input, canRemember: !!grantKey });
+  const r = await new Promise<{ allow: boolean; remember: boolean }>((resolve) =>
+    pendingApprovals.set(requestId, resolve),
+  );
+  if (r.allow && r.remember && grantKey) granted.add(grantKey);
+  return r.allow;
+}
+
+const HOME = process.env.HOME ?? "/";
+const absPath = (p: unknown) => {
+  const v = String(p ?? "").replace(/^~(?=\/|$)/, HOME);
+  return v.startsWith("/") ? v : `${HOME}/${v}`;
+};
+/** 看起来像文件（最后一段带扩展名）就取它所在的目录 */
+const dirOf = (p: string) => {
+  const last = p.slice(p.lastIndexOf("/") + 1);
+  return last.includes(".") ? p.slice(0, p.lastIndexOf("/")) || "/" : p.replace(/\/$/, "") || "/";
+};
+const under = (kind: string, path: string) =>
+  [...granted].some((g) => g.startsWith(`${kind}:`) && `${path}/`.startsWith(`${g.slice(kind.length + 1)}/`));
+
+/** 内置工具的放行规则。读本地内容和有副作用的操作都要用户点头：
+ *  读——文件内容会发给模型接口；写、跑命令——会改动这台电脑。 */
+async function gate(tool: string, input: Record<string, unknown>): Promise<{ allow: boolean; reason?: string }> {
+  switch (tool) {
+    case "TodoWrite":
+    case "mcp__docagent__search_docs":
+    case "mcp__docagent__save_note": // 它的审批在工具内部做
+      return { allow: true };
+    case "Read":
+    case "Glob":
+    case "Grep": {
+      const target = absPath(input.file_path ?? input.path ?? HOME);
+      const dir = tool === "Read" ? dirOf(target) : target.replace(/\/$/, "") || "/";
+      if (under("read", target)) return { allow: true };
+      const ok = await requestApproval(tool, { ...input, _dir: dir }, `read:${dir}`);
+      return ok ? { allow: true } : { allow: false, reason: "用户没有允许读取这个位置" };
+    }
+    case "Write":
+    case "Edit": {
+      const target = absPath(input.file_path);
+      if (under("write", target)) return { allow: true };
+      const ok = await requestApproval(tool, input, `write:${dirOf(target)}`);
+      return ok ? { allow: true } : { allow: false, reason: "用户拒绝了这次写入" };
+    }
+    case "Bash": {
+      if (granted.has("bash")) return { allow: true };
+      const ok = await requestApproval(tool, input, "bash");
+      return ok ? { allow: true } : { allow: false, reason: "用户拒绝运行这条命令" };
+    }
+    case "WebFetch": {
+      if (granted.has("web")) return { allow: true };
+      const ok = await requestApproval(tool, input, "web");
+      return ok ? { allow: true } : { allow: false, reason: "用户拒绝访问这个网址" };
+    }
+    default:
+      return { allow: false, reason: "这个工具没有启用" };
+  }
 }
 
 async function hostFetch(path: string, body: unknown) {
@@ -159,16 +221,19 @@ const docTools = createSdkMcpServer({
   ],
 });
 
-const SYSTEM = `你是一个知识助手。用户导入了一批本地文档，你可以用 search_docs 检索它们。
+const RULES = `你运行在一个叫 DocAgent 的桌面应用里，是用户的通用助手：可以读写本地文件、搜索代码、运行命令、访问网页，也可以检索用户导入的文档库。
 
-知识来源有两种，文档的优先级更高：
-1. 问题可能和用户的资料有关时，先检索。文档内容和你的常识冲突时，以文档为准。
-2. 文档没覆盖的部分，可以用你自己的知识补充，但必须分清来源：
-   - 来自文档的结论，句末标注编号 [1]、[2]（对应检索结果里的编号）
-   - 来自你自身知识的内容不标编号，并明确说明这部分不是出自用户的文档
-3. 闲聊、通用知识、写作、推理这类不依赖用户资料的请求，直接回答，不必检索。
-4. 不要把自身知识说成是文档里的，不要编造引用。文档里查不到的具体事实（数字、条款、人名），如实说文档里没有。
-5. 一个问题最多检索 3 次。用中文回答，表达清晰，适当使用 Markdown。`;
+关于用户导入的文档库（search_docs）：
+- 问题可能和用户的资料有关时先检索。文档内容和你的常识冲突时以文档为准。
+- 来自文档库的结论在句末标注编号 [1]、[2]（对应检索结果里的编号）；其它来源（你自己的知识、读到的本地文件、网页）不要用这种编号，直接说明来源。
+- 不要把自身知识说成是文档里的，不要编造引用。
+
+做事方式：
+- 用户让你了解某个项目或目录时，直接用 Glob / Grep / Read 去看，不要说自己做不到。
+- 多步任务先用 TodoWrite 列出计划，做完一步勾一步。
+- 读取、写入、运行命令会由应用向用户请求许可；被拒绝就换个办法或者如实说明，不要反复重试同一个操作。
+- 要交付文件时：用户指定了位置就用 Write 写到那里；没指定就用 save_note。
+- 用中文回答，简洁，适当使用 Markdown。`;
 
 async function handleAsk(msg: {
   id: string;
@@ -189,26 +254,47 @@ async function handleAsk(msg: {
     const q = query({
       prompt: question,
       options: {
-        systemPrompt: { type: "custom", prompt: SYSTEM },
+        // 用 Claude Code 自带的系统提示（它知道怎么用好这些工具），后面追加本应用的规则
+        systemPrompt: { type: "preset", preset: "claude_code", append: RULES },
+        cwd: HOME,
         mcpServers: { docagent: docTools },
-        // 只自动放行只读的检索。save_note 故意不写在这里：
-        // SDK 对 allowedTools 里的裸工具名直接放行，不会调 canUseTool（它自己会警告），
-        // 所以要审批的工具必须不在这个列表里。
-        allowedTools: ["mcp__docagent__search_docs"],
-        tools: [],
+        // 启用的内置工具。联网搜索依赖模型供应商的服务端支持，这里不开。
+        tools: ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "WebFetch", "TodoWrite"],
         includePartialMessages: true,
-        maxTurns: 8,
+        maxTurns: 40,
         settingSources: [],
         env: agentEnv(),
         ...(MODEL ? { model: MODEL } : {}),
         abortController: ac,
         ...(sessionId ? { resume: sessionId } : {}),
-        // 白名单之外的工具一律拒绝。save_note 的用户审批在工具内部做（见上）。
-        canUseTool: async (name, input) =>
-          name === "mcp__docagent__search_docs" || name === "mcp__docagent__save_note"
+        // 每次工具调用先过 gate。用 PreToolUse 钩子而不只靠 canUseTool：
+        // 实测 canUseTool 在一些情况下不会被调用，钩子是每次必经的。
+        hooks: {
+          PreToolUse: [
+            {
+              hooks: [
+                async (input: any) => {
+                  const r = await gate(input.tool_name, input.tool_input ?? {});
+                  return {
+                    hookSpecificOutput: {
+                      hookEventName: "PreToolUse",
+                      permissionDecision: r.allow ? "allow" : "deny",
+                      permissionDecisionReason: r.reason ?? "已放行",
+                    },
+                  };
+                },
+              ],
+            },
+          ],
+        },
+        // 钩子已经做了决定；这里兜底，万一走到这也按同一套规则
+        canUseTool: async (name: string, input: Record<string, unknown>) => {
+          const r = await gate(name, input);
+          return r.allow
             ? { behavior: "allow", updatedInput: input }
-            : { behavior: "deny", message: "这个工具没有启用" },
-        stderr: (d) => process.stderr.write(d),
+            : { behavior: "deny", message: r.reason ?? "已拒绝" };
+        },
+        stderr: (d: string) => process.stderr.write(d),
       },
     });
 
@@ -288,7 +374,7 @@ async function main() {
     }
     if (msg.type === "ask") void handleAsk(msg);
     else if (msg.type === "approval") {
-      pendingApprovals.get(msg.requestId)?.(!!msg.allow);
+      pendingApprovals.get(msg.requestId)?.({ allow: !!msg.allow, remember: !!msg.remember });
       pendingApprovals.delete(msg.requestId);
     } else if (msg.type === "abort") aborts.get(msg.id)?.abort();
   }
