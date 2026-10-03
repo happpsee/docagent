@@ -28,7 +28,7 @@ export async function parseFile(name: string, bytes: Uint8Array): Promise<Parsed
   const kind = kindFromName(name);
   if (kind === "pdf") return parsePdf(bytes);
   if (kind === "docx") return parseDocx(bytes);
-  const text = new TextDecoder("utf-8").decode(bytes);
+  const text = new TextDecoder("utf-8").decode(bytes).normalize("NFKC");
   return { kind, pages: [{ page: null, text }], pageCount: null };
 }
 
@@ -39,9 +39,12 @@ async function parsePdf(bytes: Uint8Array): Promise<Parsed> {
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i);
     const content = await page.getTextContent();
+    // NFKC：有些 PDF 会把「日」「支」「金」存成康熙部首字符（U+2F00 段），
+    // 看着一样、编码不同，不规范化的话检索和引文高亮都对不上。
     const text = content.items
       .map((it) => ("str" in it ? it.str : ""))
       .join(" ")
+      .normalize("NFKC")
       .replace(/\s+/g, " ")
       .trim();
     if (text) pages.push({ page: i, text });
@@ -58,7 +61,7 @@ async function parseDocx(bytes: Uint8Array): Promise<Parsed> {
   const mammoth = await import("mammoth");
   const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   const res = await mammoth.extractRawText({ arrayBuffer: buf as ArrayBuffer });
-  const text = res.value.trim();
+  const text = res.value.normalize("NFKC").trim();
   if (!text) throw new Error("DOCX 解析后是空的");
   return { kind: "docx", pages: [{ page: null, text }], pageCount: null };
 }

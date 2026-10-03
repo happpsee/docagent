@@ -24,7 +24,7 @@ interface Props {
   onClose: () => void;
 }
 
-const norm = (s: string) => s.replace(/\s+/g, "");
+const norm = (s: string) => s.normalize("NFKC").replace(/\s+/g, "");
 
 /** 文档阅读器：PDF 逐页渲染（带可选中的文字层），其它格式显示全文。
  *  从引用跳过来时滚到那一页并高亮被引用的片段。 */

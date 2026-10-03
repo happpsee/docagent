@@ -24,7 +24,7 @@ export function citedNumbers(text: string): number[] {
 
 /** 在全文里找引文的位置，忽略空白差异（分块时段落间的换行会被合并）。返回 [起点, 长度] */
 export function locate(text: string, quote?: string): [number, number] {
-  const q = quote ? quote.replace(/\s+/g, "") : "";
+  const q = quote ? quote.normalize("NFKC").replace(/\s+/g, "") : "";
   if (!q) return [-1, 0];
   // 去掉空白后的每个字符对应原文的下标
   const map: number[] = [];
