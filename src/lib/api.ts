@@ -110,7 +110,9 @@ export const readingState = (docId: string) =>
   invoke<{ location: string | null; fraction: number } | null>("reading_state", { docId });
 export const saveReadingState = (docId: string, location: string, fraction: number) =>
   invoke<void>("save_reading_state", { docId, location, fraction });
-export const writeTextFile = (path: string, content: string) => invoke<void>("write_text_file", { path, content });
+/** 导出文字：Rust 那边弹「另存为」再写，返回存到了哪（用户取消返回 null） */
+export const exportText = (defaultName: string, content: string) =>
+  invoke<string | null>("export_text", { defaultName, content });
 
 export const getSetting = (key: string) => invoke<string | null>("get_setting", { key });
 export const setSetting = (key: string, value: string) => invoke<void>("set_setting", { key, value });
@@ -166,7 +168,11 @@ export async function getMessages(sessionId: string): Promise<Message[]> {
     } catch {
       // 旧数据或损坏的 meta，当作没有
     }
-    return { role: r.role as Message["role"], content: r.content, ...meta };
+    // 历史里还挂着「等你同意」的卡片：那轮提问早就结束了，点了也没人接，标成过期
+    const blocks = meta.blocks?.map((b) =>
+      b.type === "tool" && b.approval?.state === "pending" ? { ...b, approval: { ...b.approval, state: "expired" as const } } : b,
+    );
+    return { role: r.role as Message["role"], content: r.content, ...meta, ...(blocks ? { blocks } : {}) };
   });
 }
 

@@ -15,6 +15,8 @@ import {
   type Hit,
   type Message,
   type Quote,
+  type ReaderCommand,
+  type ReadingInfo,
   type Session,
   type Settings,
 } from "./lib/types";
@@ -29,7 +31,7 @@ export function App() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [sessions, setSessions] = useState<Session[]>([]);
   const [current, setCurrent] = useState<Session | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessagesState] = useState<Message[]>([]);
   const [busy, setBusy] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -42,11 +44,24 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [notesVersion, setNotesVersion] = useState(0);
   const [vectorizing, setVectorizing] = useState<string | null>(null);
+  const [readerCmd, setReaderCmd] = useState<ReaderCommand | null>(null);
 
   // 事件回调里要读最新值，用 ref 避免闭包拿到旧状态
   const askRef = useRef<{ id: string; session: Session; startedAt: number } | null>(null);
+  // 消息以这个 ref 为准，状态只是它的镜像：事件一个接一个来的时候，后一个要基于前一个
+  // 改完的结果接着改，等 React 重新渲染再读就晚了（结尾的几段字会被覆盖掉）
   const messagesRef = useRef<Message[]>([]);
-  messagesRef.current = messages;
+  const setMessages = useCallback((next: Message[] | ((prev: Message[]) => Message[])) => {
+    messagesRef.current = typeof next === "function" ? next(messagesRef.current) : next;
+    setMessagesState(messagesRef.current);
+  }, []);
+  /** 流式文字先攒着，每帧合并写一次，不然每个字都让整个界面重新渲染 */
+  const deltaBuf = useRef("");
+  const deltaTimer = useRef(0);
+  const readingRef = useRef<ReadTarget | null>(null);
+  readingRef.current = reading;
+  /** 阅读器当前的位置（翻页时更新，不触发渲染） */
+  const readingInfo = useRef<ReadingInfo | null>(null);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
@@ -75,7 +90,7 @@ export function App() {
       if (last?.role === "assistant") next[next.length - 1] = fn(last);
       return next;
     });
-  }, []);
+  }, [setMessages]);
 
   /** 改助手消息里的块时间线 */
   const patchBlocks = useCallback(
@@ -83,23 +98,44 @@ export function App() {
     [patchLast],
   );
 
+  /** 把攒着的流式文字写进最后一个文字块 */
+  const flushDeltas = useCallback(() => {
+    cancelAnimationFrame(deltaTimer.current);
+    deltaTimer.current = 0;
+    const text = deltaBuf.current;
+    if (!text) return;
+    deltaBuf.current = "";
+    // 接在最后一个文字块后面；上一块是工具调用就另起一块，保持时间线顺序
+    patchBlocks((bs) => {
+      const last = bs[bs.length - 1];
+      if (last?.type === "text") return [...bs.slice(0, -1), { ...last, text: last.text + text }];
+      return [...bs, { type: "text", text }];
+    });
+  }, [patchBlocks]);
+
   const finish = useCallback(
     (patch: (m: Message) => Partial<Message>) => {
       const ask = askRef.current;
       askRef.current = null;
       setBusy(false);
+      setReaderCmd(null);
+      flushDeltas();
       const last = messagesRef.current[messagesRef.current.length - 1];
       if (!ask || last?.role !== "assistant") return;
+      const patched = { ...last, ...patch(last) };
       const done: Message = {
-        ...last,
-        ...patch(last),
+        ...patched,
+        // 这一轮结束了，还没答复的审批卡片不再有效
+        blocks: patched.blocks?.map((b) =>
+          b.type === "tool" && b.approval?.state === "pending" ? { ...b, approval: { ...b.approval, state: "expired" } } : b,
+        ),
         pending: false,
         durationMs: Date.now() - ask.startedAt,
       };
       patchLast(() => done);
       void api.addMessage(ask.session.id, done).then(refreshSessions);
     },
-    [patchLast, refreshSessions],
+    [patchLast, refreshSessions, flushDeltas],
   );
 
   const onEvent = useCallback(
@@ -109,13 +145,38 @@ export function App() {
         return setAgent("ready");
       }
       if (e.type === "extensions") return setExtensions({ user: e.user, project: e.project });
-      if (e.type === "exited") return setAgent((s) => (s === "starting" ? s : "down"));
+      if (e.type === "exited") {
+        // 助手进程没了：正在进行的这一轮不会再有结果，收尾，别让界面一直转圈
+        if (askRef.current) {
+          finish((m) => ({
+            error: !m.blocks?.length,
+            blocks: [...(m.blocks ?? []), { type: "text", text: "*助手进程意外退出了，这次回答没有完成。点左下角可以重连。*" }],
+          }));
+        }
+        return setAgent((s) => (s === "starting" ? s : "down"));
+      }
       const ask = askRef.current;
       if (!ask || !("id" in e) || e.id !== ask.id) {
         if (e.type === "error" && !("id" in e && e.id)) setError(e.message);
         return;
       }
+      if (e.type === "delta") {
+        deltaBuf.current += e.text;
+        deltaTimer.current ||= requestAnimationFrame(flushDeltas);
+        return;
+      }
+      // 其它事件要排在已经收到的文字后面
+      flushDeltas();
       switch (e.type) {
+        case "reader_action": {
+          // 书没开着就先打开；阅读器准备好后会执行这条指令并回话
+          if (readingRef.current?.docId !== e.docId) {
+            setReading({ docId: e.docId, nonce: Date.now() });
+            setCollapsed(true);
+          }
+          setReaderCmd({ callId: e.callId, action: e.action, docId: e.docId, quote: e.quote, note: e.note, color: e.color, page: e.page });
+          break;
+        }
         case "session": {
           const s = { ...ask.session, sdkSessionId: e.sessionId };
           ask.session = s;
@@ -123,14 +184,6 @@ export function App() {
           void api.upsertSession(s.id, s.title, e.sessionId);
           break;
         }
-        case "delta":
-          // 接在最后一个文字块后面；上一块是工具调用就另起一块，保持时间线顺序
-          patchBlocks((bs) => {
-            const last = bs[bs.length - 1];
-            if (last?.type === "text") return [...bs.slice(0, -1), { ...last, text: last.text + e.text }];
-            return [...bs, { type: "text", text: e.text }];
-          });
-          break;
         case "tool":
           patchBlocks((bs) => {
             // 审批请求可能比这条先到，那时已经放了一个占位块，这里把真实的调用 id 补上
@@ -154,7 +207,12 @@ export function App() {
           break;
         case "approval_request": {
           // 挂到对应的那次工具调用上（最近一个同名、还没结果、还没挂审批的）
-          const approval = { requestId: e.requestId, state: "pending" as const, canRemember: e.canRemember };
+          const approval = {
+            requestId: e.requestId,
+            state: "pending" as const,
+            canRemember: e.canRemember,
+            rememberLabel: e.rememberLabel,
+          };
           patchBlocks((bs) => {
             const i = bs.findLastIndex(
               (b) => b.type === "tool" && b.name.endsWith(e.name) && b.result == null && !b.approval,
@@ -185,12 +243,13 @@ export function App() {
               error: !m.blocks?.length,
               content: m.content || e.message,
               blocks: [...(m.blocks ?? []), { type: "text", text: `出错了：${e.message}` }],
+              ...(e.hits?.length ? { hits: e.hits } : {}),
             }));
           }
           break;
       }
     },
-    [finish, patchBlocks],
+    [finish, patchBlocks, flushDeltas],
   );
 
   useEffect(() => {
@@ -248,6 +307,11 @@ export function App() {
       // 浏览器预览：?book=d4 直接打开一本书
       const book = api.isPreview ? /book=(\w+)/.exec(location.search) : null;
       if (book) openDoc(book[1]);
+      // ?book=d4&hl=原文：模拟助手让阅读器划线
+      const hl = api.isPreview && book ? /hl=([^&]+)/.exec(location.search) : null;
+      if (book && hl) {
+        setReaderCmd({ callId: "preview", action: "highlight", docId: book[1], quote: decodeURIComponent(hl[1]), note: "助手加的笔记" });
+      }
       if (api.isPreview && location.search.includes("chat")) {
         const list = await api.listSessions();
         if (list[0]) {
@@ -316,13 +380,18 @@ export function App() {
           : question,
         sessionId: session.sdkSessionId ?? undefined,
         docIds: scope ?? (selected.size ? [...selected] : undefined),
+        // 阅读器开着的话，告诉助手用户在看哪本、读到哪
+        reading: reading && readingInfo.current?.docId === reading.docId ? readingInfo.current : undefined,
         k: settings.topK,
         cwd: settings.workspace ?? undefined,
       });
       refreshSessions();
     } catch (err) {
-      setBusy(false);
       setError(String(err));
+      // 已经放了一条「处理中」的回答就把它收尾，否则它会一直转
+      if (askRef.current) {
+        finish((m) => ({ error: true, content: String(err), blocks: [...(m.blocks ?? []), { type: "text", text: `没发出去：${String(err)}` }] }));
+      } else setBusy(false);
     }
   }
 
@@ -368,8 +437,18 @@ export function App() {
   const openHit = (h: Hit) => openDoc(h.docId, h.page, h.text);
   function closeReader() {
     setReading(null);
+    readingInfo.current = null;
     setCollapsed(false);
   }
+
+  /** 阅读器做完了助手交代的事，回话 */
+  const onReaderDone = useCallback((callId: string, ok: boolean, message: string) => {
+    setReaderCmd((c) => (c?.callId === callId ? null : c));
+    void api.agentSend({ type: "reader_result", callId, ok, message });
+  }, []);
+  const onLocation = useCallback((info: ReadingInfo) => {
+    readingInfo.current = info;
+  }, []);
 
   /** 换工作文件夹：只存设置，不用重启助手（每次提问都会带上） */
   async function setWorkspace(workspace: string | null) {
@@ -504,7 +583,11 @@ export function App() {
         />
         {readingDoc && reading && (
           <Reader
+            key={readingDoc.id}
             doc={readingDoc}
+            command={readerCmd?.docId === readingDoc.id ? readerCmd : null}
+            onCommandDone={onReaderDone}
+            onLocation={onLocation}
             target={reading}
             notesVersion={notesVersion}
             onClose={closeReader}

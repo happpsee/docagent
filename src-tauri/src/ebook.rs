@@ -11,11 +11,15 @@ use std::io::{Cursor, Read};
 
 type Zip<'a> = zip::ZipArchive<Cursor<&'a [u8]>>;
 
+/// 压缩包里单个文件解出来最多这么大。头里声明的大小不可信（损坏的文件、压缩炸弹），
+/// 不按它预分配，读的时候也设上限
+pub const MAX_ENTRY: u64 = 64 * 1024 * 1024;
+
 fn read_entry(zip: &mut Zip, name: &str) -> Option<Vec<u8>> {
-    let mut f = zip.by_name(name).ok()?;
-    let mut buf = Vec::with_capacity(f.size() as usize);
-    f.read_to_end(&mut buf).ok()?;
-    Some(buf)
+    let f = zip.by_name(name).ok()?;
+    let mut buf = Vec::new();
+    f.take(MAX_ENTRY + 1).read_to_end(&mut buf).ok()?;
+    (buf.len() as u64 <= MAX_ENTRY).then_some(buf)
 }
 
 fn read_text(zip: &mut Zip, name: &str) -> Option<String> {

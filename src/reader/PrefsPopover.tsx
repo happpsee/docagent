@@ -3,7 +3,7 @@ import type { ReaderPrefs } from "@/lib/types";
 import { THEMES } from "./engine";
 
 /** 阅读设置：字号、行距、版心、翻页方式、字体、配色。所有书共用一份。 */
-export function PrefsPopover(p: { prefs: ReaderPrefs; fixed: boolean; onChange: (patch: Partial<ReaderPrefs>) => void; onClose: () => void }) {
+export function PrefsPopover(p: { prefs: ReaderPrefs; fixed: boolean; onChange: (patch: Partial<ReaderPrefs>) => void }) {
   const { prefs, onChange } = p;
   const row = "flex items-center justify-between gap-3 py-1.5";
   const label = "text-[12px] text-text-3";
@@ -26,6 +26,7 @@ export function PrefsPopover(p: { prefs: ReaderPrefs; fixed: boolean; onChange: 
 
   return (
     <div
+      data-floating
       className="absolute right-12 top-11 z-30 w-[270px] rounded-xl border border-hairline-strong bg-surface-2 px-3.5 py-2 shadow-[0_10px_32px_-8px_rgb(0_0_0/0.3)]"
       role="dialog"
       aria-label="阅读设置"

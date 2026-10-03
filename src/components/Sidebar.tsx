@@ -108,6 +108,12 @@ export function Sidebar(p: Props) {
               e.stopPropagation();
               if (!p.progress) void importFiles();
             }}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault();
+              e.stopPropagation();
+              if (!p.progress) void importFiles();
+            }}
           >
             <Plus className="h-3.5 w-3.5" />
           </span>
@@ -146,14 +152,17 @@ export function Sidebar(p: Props) {
                     <span className="num shrink-0 text-[11px] text-text-4 group-hover:hidden">{Math.round(d.progress * 100)}%</span>
                   ) : null}
                   <button
-                    className="hidden group-hover:block"
+                    className="opacity-0 focus-visible:opacity-100 group-hover:opacity-100"
                     aria-label="删除文档"
-                    onClick={() => void api.deleteDocument(d.id).then(p.onDocsChanged, (err) => p.onError(String(err)))}
+                    onClick={() => {
+                      if (!confirm(`从书架上移除《${d.title}》？\n这份文档上的划线、笔记和阅读进度会一起删掉（原文件不动）。`)) return;
+                      void api.deleteDocument(d.id).then(p.onDocsChanged, (err) => p.onError(String(err)));
+                    }}
                   >
                     <Trash2 className="h-3.5 w-3.5 text-text-4 hover:text-danger" />
                   </button>
                   <button
-                    className={on ? "" : "opacity-0 group-hover:opacity-100"}
+                    className={on ? "" : "opacity-0 focus-visible:opacity-100 group-hover:opacity-100"}
                     aria-label={on ? "取消限定" : "只检索这份"}
                     aria-pressed={on}
                     title={on ? "已限定在这份文档里检索，点击取消" : "只在这份文档里检索"}
@@ -192,9 +201,11 @@ export function Sidebar(p: Props) {
               </button>
               <span className="num shrink-0 text-[10px] text-text-4 group-hover:hidden">{ago(s.updatedAt)}</span>
               <button
-                className="hidden group-hover:block"
+                className="hidden focus-visible:block group-hover:block"
                 aria-label="删除会话"
-                onClick={() => p.onDeleteSession(s)}
+                onClick={() => {
+                  if (confirm(`删除会话「${s.title}」？`)) p.onDeleteSession(s);
+                }}
               >
                 <Trash2 className="h-3.5 w-3.5 text-text-4 hover:text-danger" />
               </button>

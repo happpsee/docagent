@@ -209,6 +209,7 @@ export function SearchPanel(p: {
   onSearch: (q: string) => void;
   onClear: () => void;
   searching: boolean;
+  searched: null | { capped: boolean };
   results: SearchGroup[];
   onGo: (cfi: string) => void;
 }) {
@@ -237,7 +238,17 @@ export function SearchPanel(p: {
           )}
         </div>
         <div className="mt-1.5 px-0.5 text-[11px] text-text-4">
-          {p.searching ? "正在找…" : count ? `找到 ${count} 处` : p.results.length === 0 && p.query ? "回车开始搜索" : ""}
+          {p.searching
+            ? "正在找…"
+            : p.searched
+              ? count
+                ? p.searched.capped
+                  ? `太多了，只列出前 ${count} 处，换个更具体的词试试`
+                  : `找到 ${count} 处`
+                : "没有找到"
+              : p.query
+                ? "回车开始搜索"
+                : ""}
         </div>
       </form>
       <ul className="px-2 py-1">

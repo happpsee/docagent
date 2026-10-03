@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Check, ChevronRight, Circle, Loader2, NotebookPen } from "lucide-react";
 import { citedNumbers, pageLabel } from "@/lib/citations";
 import type { Block, Hit, Message, Quote } from "@/lib/types";
@@ -35,11 +35,21 @@ const SUGGESTIONS = ["这些资料主要讲了什么？", "帮我看看某个项
 
 export function ChatPanel(p: Props) {
   const [input, setInput] = useState("");
-  const endRef = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  /** 用户是不是贴着底部：是才跟着新内容往下滚，往上翻着看的时候不打扰 */
+  const stick = useRef(true);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const el = scroller.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [p.messages]);
+  // 自己发了新问题：回到底部
+  const count = p.messages.length;
+  useEffect(() => {
+    stick.current = true;
+    const el = scroller.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [count]);
 
   function submit(text = input) {
     const q = text.trim();
@@ -113,7 +123,14 @@ export function ChatPanel(p: Props) {
         <header className="truncate px-6 py-3 text-[13px] text-text-3">{p.title}</header>
       )}
 
-      <div className="flex-1 overflow-y-auto">
+      <div
+        ref={scroller}
+        className="flex-1 overflow-y-auto"
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+        }}
+      >
         <div className={`mx-auto flex max-w-[740px] flex-col gap-6 pb-8 ${p.compact ? "px-4 pt-4" : "px-6 pt-2"}`}>
           {p.messages.map((m, i) =>
             m.role === "user" ? (
@@ -147,7 +164,7 @@ export function ChatPanel(p: Props) {
               />
             ),
           )}
-          <div ref={endRef} className="h-2" />
+          <div className="h-2" />
         </div>
       </div>
 
@@ -161,7 +178,10 @@ export function ChatPanel(p: Props) {
   );
 }
 
-function Assistant({
+/** 一条助手消息。流式输出时只有最后一条在变，前面的不用跟着重新渲染 */
+const Assistant = memo(AssistantView, (a, b) => a.m === b.m && a.startedAt === b.startedAt && a.quote === b.quote);
+
+function AssistantView({
   m,
   startedAt,
   onCite,
@@ -313,6 +333,16 @@ function describe(name: string, input: Record<string, unknown>): { label: string
       return { label: "检索文档", arg: String(input.query ?? "") };
     case "save_note":
       return { label: "保存文件", arg: String(input.filename ?? "") };
+    case "list_notes":
+      return { label: "读我的划线和笔记", arg: "" };
+    case "read_section":
+      return { label: "读原文", arg: input.number ? `第 ${String(input.number)} 节` : "当前这一节" };
+    case "highlight":
+      return { label: "划线", arg: String(input.quote ?? "") };
+    case "show_in_reader":
+      return { label: "翻到", arg: String(input.quote ?? (input.number ? `第 ${String(input.number)} 节` : "")) };
+    case "TrustFolder":
+      return { label: "文件夹里的配置", arg: tilde(input.dir), mono: true };
     case "Read":
       return { label: "读取", arg: tilde(input.file_path), mono: true };
     case "Glob":
@@ -368,6 +398,26 @@ function approvalCopy(name: string, input: Record<string, unknown>): { title: st
       return { title: "允许访问这个网址吗？", body: String(input.url ?? "") };
     case "WebSearch":
       return { title: "允许联网搜索吗？", note: "搜索词会发给模型供应商的搜索服务", body: String(input.query ?? "") };
+    case "highlight":
+      return {
+        title: `允许在《${String(input.docTitle ?? "")}》里划这一段吗？`,
+        note: input.note ? `附笔记：${String(input.note)}` : undefined,
+        body: String(input.quote ?? ""),
+      };
+    case "TrustFolder": {
+      const commands = (input.commands as string[] | undefined) ?? [];
+      const skills = (input.skills as string[] | undefined) ?? [];
+      return {
+        title: "这个文件夹自带了配置，要用吗？",
+        note: "MCP 服务是会在你电脑上运行的命令，技能是给助手的指令。文件夹是你自己的就允许；是下载来的先看清楚。",
+        body: [
+          commands.length ? `会运行的 MCP 服务：\n${commands.map((c) => `  ${c}`).join("\n")}` : "",
+          skills.length ? `技能：${skills.join("、")}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      };
+    }
     case "save_note":
       return {
         title: "允许保存这个文件吗？",
@@ -391,9 +441,10 @@ function ToolRow({ b, onApproval }: { b: Extract<Block, { type: "tool" }>; onApp
   const [open, setOpen] = useState(false);
   const { label, arg, mono } = describe(b.name, b.input);
   const denied = b.approval?.state === "denied";
-  const running = b.result == null && !denied;
+  const expired = b.approval?.state === "expired";
+  const running = b.result == null && !denied && !expired;
   const found = b.name.endsWith("search_docs") && b.result ? (b.result.match(/^\[\d+\]/gm)?.length ?? 0) : null;
-  const dot = b.isError || denied ? "bg-danger" : running ? "bg-warm animate-pulse" : "bg-good";
+  const dot = b.isError || denied ? "bg-danger" : running ? "bg-warm animate-pulse" : expired && b.result == null ? "bg-text-4" : "bg-good";
   const ask = b.approval?.state === "pending" ? approvalCopy(b.name, b.input) : null;
   const shown = Object.fromEntries(Object.entries(b.input).filter(([k]) => !k.startsWith("_")));
 
@@ -408,6 +459,7 @@ function ToolRow({ b, onApproval }: { b: Extract<Block, { type: "tool" }>; onApp
         <span className={`min-w-0 truncate text-text-3 ${mono ? "num text-[12px]" : ""}`}>{arg}</span>
         {found != null && <span className="num shrink-0 text-[11px] text-text-4">{found} 个片段</span>}
         {denied && <span className="shrink-0 text-[11px] text-danger">已拒绝</span>}
+        {expired && b.result == null && <span className="shrink-0 text-[11px] text-text-4">没有执行</span>}
         <ChevronRight
           className={`ml-auto h-3.5 w-3.5 shrink-0 text-text-4 transition-transform ${open ? "rotate-90" : ""}`}
         />
@@ -422,6 +474,9 @@ function ToolRow({ b, onApproval }: { b: Extract<Block, { type: "tool" }>; onApp
               {ask.body}
             </pre>
           )}
+          {b.approval?.canRemember && b.approval.rememberLabel && (
+            <div className="mt-2 text-[11px] text-text-4">选「允许并记住」：{b.approval.rememberLabel}</div>
+          )}
           <div className="mt-2.5 flex flex-wrap justify-end gap-2">
             <button
               className="arc-btn-secondary rounded-md px-3 py-1.5 text-[12px]"
@@ -433,9 +488,9 @@ function ToolRow({ b, onApproval }: { b: Extract<Block, { type: "tool" }>; onApp
               <button
                 className="arc-btn-secondary rounded-md px-3 py-1.5 text-[12px]"
                 onClick={() => onApproval(b.approval!.requestId, true, true)}
-                title="这次运行期间，同一位置或同类操作不再询问"
+                title={b.approval.rememberLabel ?? "这次运行期间，同类操作不再询问"}
               >
-                本次都允许
+                允许并记住
               </button>
             )}
             <button

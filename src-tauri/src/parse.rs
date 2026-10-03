@@ -105,6 +105,7 @@ pub fn extract_docx(bytes: &[u8]) -> Result<String> {
     let mut xml = String::new();
     zip.by_name("word/document.xml")
         .context("DOCX 里找不到正文")?
+        .take(crate::ebook::MAX_ENTRY)
         .read_to_string(&mut xml)?;
 
     let mut reader = quick_xml::Reader::from_str(&xml);

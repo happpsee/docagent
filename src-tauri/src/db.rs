@@ -468,6 +468,42 @@ pub fn import_document(
     Ok(doc_id)
 }
 
+/// 一份文档某一节的全文：把那一节的片段按顺序接起来（片段之间有重叠，这里不去重，
+/// 给模型读没有影响）。文档不分节时（Markdown、TXT、MOBI…），按读到的进度取附近的一段。
+pub fn section_text(
+    conn: &Connection,
+    doc_id: &str,
+    page: Option<i64>,
+    fraction: Option<f64>,
+) -> Result<String> {
+    let paged: bool = conn
+        .prepare("SELECT 1 FROM chunks WHERE doc_id = ?1 AND page IS NOT NULL LIMIT 1")?
+        .exists(params![doc_id])?;
+    let texts: Vec<String> = match page.filter(|_| paged) {
+        Some(p) => {
+            let mut stmt = conn
+                .prepare("SELECT text FROM chunks WHERE doc_id = ?1 AND page = ?2 ORDER BY idx")?;
+            let rows = stmt.query_map(params![doc_id, p], |r| r.get(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        }
+        None => {
+            let total: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM chunks WHERE doc_id = ?1",
+                params![doc_id],
+                |r| r.get(0),
+            )?;
+            // 当前位置往前带两块、往后十来块
+            let at = (fraction.unwrap_or(0.0).clamp(0.0, 1.0) * total as f64) as i64;
+            let mut stmt = conn.prepare(
+                "SELECT text FROM chunks WHERE doc_id = ?1 AND idx >= ?2 ORDER BY idx LIMIT 14",
+            )?;
+            let rows = stmt.query_map(params![doc_id, (at - 2).max(0)], |r| r.get(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        }
+    };
+    Ok(texts.join("\n\n"))
+}
+
 // ---------- 向量 ----------
 
 /// 向量表只能装一种模型、一种维度的向量。模型换了就整表重来

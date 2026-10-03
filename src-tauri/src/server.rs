@@ -59,6 +59,7 @@ pub fn start(conn: Arc<Mutex<Connection>>, save_dir: PathBuf) -> Result<LocalApi
                 (Method::Post, "/search") => handle_search(&conn, &body),
                 (Method::Post, "/save") => handle_save(&save_dir, &body),
                 (Method::Post, "/annotations") => handle_annotations(&conn, &body),
+                (Method::Post, "/section") => handle_section(&conn, &body),
                 _ => Err(anyhow::anyhow!("未知接口")),
             };
             let (code, payload) = match result {
@@ -112,9 +113,43 @@ fn handle_save(save_dir: &std::path::Path, body: &str) -> Result<serde_json::Val
     let req: SaveReq = serde_json::from_str(body)?;
     let name = sanitize_filename(&req.filename);
     std::fs::create_dir_all(save_dir)?;
-    let path = save_dir.join(name);
+    let path = free_path(save_dir, &name);
     std::fs::write(&path, req.content)?;
     Ok(serde_json::json!({ "path": path.to_string_lossy() }))
+}
+
+/// 同名文件已经在了就加序号（总结.md → 总结 (2).md），不覆盖用户已有的东西
+fn free_path(dir: &std::path::Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s, format!(".{e}")),
+        _ => (name, String::new()),
+    };
+    (2..)
+        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
+        .find(|p| !p.exists())
+        .unwrap_or(first)
+}
+
+/// 读一份文档的某一节（PDF 的一页 / 电子书的一章）。没有分节的文档返回开头的一段
+fn handle_section(conn: &Arc<Mutex<Connection>>, body: &str) -> Result<serde_json::Value> {
+    #[derive(Deserialize)]
+    struct Req {
+        #[serde(rename = "docId")]
+        doc_id: String,
+        page: Option<i64>,
+        fraction: Option<f64>,
+    }
+    const LIMIT: usize = 12_000;
+    let req: Req = serde_json::from_str(body)?;
+    let conn = conn.lock().map_err(|_| anyhow::anyhow!("数据库锁异常"))?;
+    let text = db::section_text(&conn, &req.doc_id, req.page, req.fraction)?;
+    let truncated = text.chars().count() > LIMIT;
+    let text: String = text.chars().take(LIMIT).collect();
+    Ok(serde_json::json!({ "text": text, "page": req.page, "truncated": truncated }))
 }
 
 pub fn sanitize_filename(raw: &str) -> String {
@@ -133,7 +168,19 @@ pub fn sanitize_filename(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_filename;
+    use super::{free_path, sanitize_filename};
+
+    #[test]
+    fn 同名文件不覆盖_加序号() {
+        let dir = std::env::temp_dir().join(format!("docagent-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(free_path(&dir, "总结.md"), dir.join("总结.md"));
+        std::fs::write(dir.join("总结.md"), "旧的").unwrap();
+        assert_eq!(free_path(&dir, "总结.md"), dir.join("总结 (2).md"));
+        std::fs::write(dir.join("总结 (2).md"), "x").unwrap();
+        assert_eq!(free_path(&dir, "总结.md"), dir.join("总结 (3).md"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn 文件名不能带路径跳出保存目录() {

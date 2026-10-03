@@ -79,7 +79,7 @@ pub fn run() {
             commands::delete_annotation,
             commands::reading_state,
             commands::save_reading_state,
-            commands::write_text_file,
+            commands::export_text,
             commands::get_setting,
             commands::set_setting,
             commands::db_info,

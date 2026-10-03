@@ -20,7 +20,9 @@ import {
   type Doc,
   type HighlightColor,
   type HighlightStyle,
+  type ReaderCommand,
   type ReaderPrefs,
+  type ReadingInfo,
 } from "@/lib/types";
 import { ModalCloseButton } from "@/components/ui/ModalCloseButton";
 import { anchorOf, applyPrefs, CITE_COLOR, HL, loadEngine, locateQuote, openSource, THEMES, type FoliateView } from "./engine";
@@ -48,6 +50,11 @@ interface Props {
   target: ReadTarget;
   /** 外面改了笔记（比如把助手的回答存成笔记）时加一，阅读器重新读一遍 */
   notesVersion: number;
+  /** 助手交代的事（划线、翻到某处）；做完用 onCommandDone 回话 */
+  command: ReaderCommand | null;
+  onCommandDone: (callId: string, ok: boolean, message: string) => void;
+  /** 翻页时报告当前位置，提问时带给助手 */
+  onLocation: (info: ReadingInfo) => void;
   onClose: () => void;
   /** 用户对选中的文字发起操作 */
   onSelection: (action: SelectionAction, text: string, page: number | null, cfi: string) => void;
@@ -73,9 +80,22 @@ type Panel = "toc" | "notes" | "bookmarks" | "search";
 const PREFS_KEY = "reader";
 const NOTE_PREFIX = "foliate-note:";
 const CITE_ID = "__cite__";
+const SEARCH_CAP = 500;
 
 /** 阅读器：所有格式都走同一个排版引擎，所以目录、搜索、高亮、笔记、书签、进度记忆对每种格式都一样。 */
-export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskNotes, onDocsChanged, onError }: Props) {
+export function Reader({
+  doc,
+  target,
+  notesVersion,
+  command,
+  onCommandDone,
+  onLocation,
+  onClose,
+  onSelection,
+  onAskNotes,
+  onDocsChanged,
+  onError,
+}: Props) {
   const host = useRef<HTMLDivElement>(null);
   const stage = useRef<HTMLDivElement>(null);
   const viewRef = useRef<FoliateView | null>(null);
@@ -95,6 +115,15 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchGroup[]>([]);
   const [searching, setSearching] = useState(false);
+  /** 搜完了没有：区分「还没搜」和「搜了但没找到」 */
+  const [searched, setSearched] = useState<null | { capped: boolean }>(null);
+  /** 拖进度条时先只动滑块，松手才真的跳 */
+  const [drag, setDrag] = useState<number | null>(null);
+  /** 每条标记在第几节，算一次记下来 */
+  const sectionOf = useRef(new Map<string, number>());
+  const footnoteView = useRef<FoliateView | null>(null);
+  const onLocationRef = useRef(onLocation);
+  onLocationRef.current = onLocation;
   const searchRun = useRef(0);
   const [lastStyle, setLastStyle] = useState<{ color: HighlightColor; style: HighlightStyle }>({
     color: "yellow",
@@ -121,6 +150,20 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
     void view.addAnnotation({ value: a.cfi, id: a.id }).catch(() => {});
     if (a.note) void view.addAnnotation({ value: NOTE_PREFIX + a.cfi, id: a.id }).catch(() => {});
     else void view.deleteAnnotation({ value: NOTE_PREFIX + a.cfi }).catch(() => {});
+  }, []);
+
+  /** 标记在第几节（算不出来返回 -1，那就每节都试着画） */
+  const indexOf = useCallback((a: Annotation) => {
+    const known = sectionOf.current.get(a.id);
+    if (known != null) return known;
+    let index = -1;
+    try {
+      index = viewRef.current?.resolveCFI(a.cfi)?.index ?? -1;
+    } catch {
+      // 位置解析不了
+    }
+    sectionOf.current.set(a.id, index);
+    return index;
   }, []);
 
   const erase = useCallback((a: Annotation) => {
@@ -164,6 +207,7 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
     setResults([]);
     setQuery("");
     citeRef.current = null;
+    let opened: { destroy?: () => void } | null = null;
 
     void (async () => {
       try {
@@ -176,6 +220,7 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
         const p = { ...DEFAULT_READER_PREFS, ...(rawPrefs ? (JSON.parse(rawPrefs) as Partial<ReaderPrefs>) : {}) };
         if (p.spread !== "both") p.spread = "none";
         const source = await openSource(doc, p);
+        opened = source as { destroy?: () => void };
         if (dead || !stage.current) return;
         setPrefs(p);
         prefsRef.current = p;
@@ -197,6 +242,17 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
           const l = (e as CustomEvent<Loc>).detail;
           setLoc(l);
           setCanGoBack(!!v.history?.canGoBack);
+          // 翻页了，浮在原位置上的菜单和脚注就不对了
+          setPopup(null);
+          setFootnote(null);
+          onLocationRef.current({
+            docId: doc.id,
+            docTitle: doc.title,
+            // 索引里 PDF 按页、EPUB 按节记了位置；其它格式没有
+            page: (v.isFixedLayout || doc.kind === "epub") && l.section ? l.section.current + 1 : null,
+            chapter: l.tocItem?.label?.trim() ?? "",
+            fraction: l.fraction ?? 0,
+          });
           // 进度别每翻一页都写库，停下来再写
           clearTimeout(saveTimer);
           saveTimer = window.setTimeout(() => {
@@ -240,8 +296,12 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
         });
 
         // 一节的标注层建好了：把这本书的高亮画上去（不在这一节的会被引擎忽略）
-        v.addEventListener("create-overlay", () => {
-          for (const a of annRef.current) draw(a);
+        v.addEventListener("create-overlay", (e) => {
+          const { index } = (e as CustomEvent<{ index: number }>).detail;
+          for (const a of annRef.current) {
+            const at = indexOf(a);
+            if (at < 0 || at === index) draw(a);
+          }
           if (citeRef.current) void v.addAnnotation({ value: citeRef.current, id: CITE_ID }).catch(() => {});
         });
 
@@ -288,6 +348,13 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
         v.addEventListener("external-link", (e) => e.preventDefault());
         notesHandler.addEventListener("before-render", (e) => {
           const fv = (e as CustomEvent<{ view: FoliateView }>).detail.view;
+          // 上一条脚注的视图要关掉，不然每点一次就多留一个
+          try {
+            footnoteView.current?.close();
+          } catch {
+            // 已经关过了
+          }
+          footnoteView.current = fv;
           fv.style.cssText = "display:block;width:100%;height:100%";
           fv.addEventListener("link", (ev) => {
             ev.preventDefault();
@@ -311,9 +378,10 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
         });
 
         // 从引用点进来的直接去引用处，否则回到上次读到的地方
-        const t = targetRef.current;
         if (saved?.location || !v.isFixedLayout) await v.init({ lastLocation: saved?.location ?? null });
         else await v.goTo(0);
+        // 打开的这段时间里用户可能又点了别的引用，以最新的为准
+        const t = targetRef.current;
         if (t.quote || t.page || t.cfi) await showCitation(v, t);
         if (dead) return;
         setReady(true);
@@ -334,10 +402,25 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
 
     function onKey(e: KeyboardEvent) {
       const v = viewRef.current;
-      if (!v || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (!v) return;
+      // 有弹窗盖在上面（设置等）时，按键是给弹窗的
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      if (e.key === "Escape") {
+        setPopup(null);
+        setFootnote(null);
+        setShowPrefs(false);
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+        setPanel("search");
+        e.preventDefault();
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // 焦点在输入框、按钮上时，空格和方向键是给它们的
       const el = e.target as HTMLElement | null;
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
-      if (e.key === "ArrowLeft" || e.key === "PageUp") void v.goLeft();
+      if (el?.closest?.("input, textarea, select, button, [contenteditable], [role=dialog]")) return;
+      if (e.key === "ArrowLeft" || e.key === "PageUp" || (e.key === " " && e.shiftKey)) void v.goLeft();
       else if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") void v.goRight();
       else return;
       e.preventDefault();
@@ -351,11 +434,14 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
       const l = locRef.current;
       if (l?.cfi) void api.saveReadingState(doc.id, l.cfi, l.fraction ?? 0).then(onDocsChanged, () => {});
       try {
+        footnoteView.current?.close();
         view?.close();
-        (view?.book as { destroy?: () => void } | undefined)?.destroy?.();
+        // 书可能还没来得及交给引擎就被关了（快速切书），一样要释放（PDF 的后台线程、解压器）
+        opened?.destroy?.();
       } catch {
         // 引擎收尾出错不影响关闭
       }
+      footnoteView.current = null;
       view?.remove();
       viewRef.current = null;
     };
@@ -376,6 +462,7 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
     if (!notesVersion) return;
     void api.listAnnotations(doc.id).then((list) => {
       for (const a of annRef.current) erase(a);
+      sectionOf.current.clear();
       annRef.current = list;
       setAnnotations(list);
       for (const a of list) draw(a);
@@ -510,20 +597,30 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
     const v = viewRef.current;
     const run = ++searchRun.current;
     setResults([]);
+    setSearched(null);
     if (!v) return;
     v.clearSearch();
     if (!q.trim()) return setSearching(false);
     setSearching(true);
     try {
       const found: SearchGroup[] = [];
+      let count = 0;
+      let capped = false;
       for await (const r of v.search({ query: q.trim(), matchCase: false, matchDiacritics: false, matchWholeWords: false })) {
         if (run !== searchRun.current) return;
         if (r === "done") break;
         if (r.subitems) {
           found.push({ label: r.label ?? "", items: r.subitems });
+          count += r.subitems.length;
           setResults([...found]);
+          // 搜「的」这种字会有几千处，列不过来也没意义
+          if (count >= SEARCH_CAP) {
+            capped = true;
+            break;
+          }
         }
       }
+      if (run === searchRun.current) setSearched({ capped });
     } catch (err) {
       onError(`搜索失败：${String(err)}`);
     } finally {
@@ -537,29 +634,87 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
     setResults([]);
     setQuery("");
     setSearching(false);
+    setSearched(null);
   }
 
   const goTo = (t: string | number) => void viewRef.current?.goTo(t)?.catch((err: unknown) => onError(String(err)));
 
   async function exportNotes() {
     const md = notesMarkdown(doc, highlights);
+    const name = `${doc.title.replace(/\.[^.]+$/, "")}-笔记.md`;
     try {
       if (api.isPreview) {
         const a = document.createElement("a");
         a.href = URL.createObjectURL(new Blob([md], { type: "text/markdown" }));
-        a.download = `${doc.title}-笔记.md`;
+        a.download = name;
         a.click();
         return;
       }
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const path = await save({ defaultPath: `${doc.title.replace(/\.[^.]+$/, "")}-笔记.md`, filters: [{ name: "Markdown", extensions: ["md"] }] });
-      if (path) await api.writeTextFile(path, md);
+      await api.exportText(name, md);
     } catch (err) {
       onError(String(err));
     }
   }
 
-  const percent = loc ? Math.round((loc.fraction ?? 0) * 100) : 0;
+  // ---------- 助手交代的事 ----------
+
+  useEffect(() => {
+    const v = viewRef.current;
+    if (!ready || !v || !command) return;
+    const cmd = command;
+    const current = locRef.current?.section ? locRef.current.section.current + 1 : null;
+    void (async () => {
+      if (cmd.action === "goto") {
+        if (!cmd.quote) {
+          const n = Math.min(Math.max(cmd.page ?? 1, 1), v.book.sections.length);
+          await v.goTo(n - 1);
+          return onCommandDone(cmd.callId, true, `已翻到第 ${n} ${fixed ? "页" : "节"}。`);
+        }
+        const cfi = await locateQuote(v, cmd.quote, cmd.page ?? current);
+        if (!cfi) return onCommandDone(cmd.callId, false, "在书里没找到这段原文。原文要一字不差，可以先用 read_section 读出来再照抄。");
+        await showCitation(v, { docId: doc.id, cfi, nonce: Date.now() });
+        if (citeRef.current) void v.deleteAnnotation({ value: citeRef.current }).catch(() => {});
+        citeRef.current = cfi;
+        void v.addAnnotation({ value: cfi, id: CITE_ID }).catch(() => {});
+        return onCommandDone(cmd.callId, true, "已翻到那一处并标出来了。");
+      }
+      const quote = cmd.quote ?? "";
+      const cfi = await locateQuote(v, quote, cmd.page ?? current);
+      if (!cfi) return onCommandDone(cmd.callId, false, "在书里没找到这段原文，没有划线。原文要一字不差，可以先用 read_section 读出来再照抄。");
+      const now = Math.floor(Date.now() / 1000);
+      const a: Annotation = {
+        id: crypto.randomUUID(),
+        docId: doc.id,
+        kind: "highlight",
+        cfi,
+        text: quote,
+        note: cmd.note ?? "",
+        color: cmd.color ?? "yellow",
+        style: "highlight",
+        label: "",
+        page: fixed ? (cmd.page ?? current) : null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      // 先放进列表引擎才画得出来；章节名要等引擎解析完位置才知道
+      annRef.current = [...annRef.current, a];
+      const info = (await v.addAnnotation({ value: cfi, id: a.id }).catch(() => null)) as { label?: string } | null;
+      await saveAnnotation({ ...a, label: info?.label?.trim() ?? "" });
+      await v.goTo(cfi);
+      setPanel("notes");
+      onCommandDone(cmd.callId, true, `已划线${cmd.note ? "并附上笔记" : ""}。`);
+    })().catch((err) => onCommandDone(cmd.callId, false, `阅读器出错：${String(err)}`));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, command?.callId]);
+
+  /** 松手才跳：拖的过程中每一格都跳的话，会连着加载几十章，「返回」也要按几十次 */
+  function commitDrag() {
+    if (drag == null) return;
+    void viewRef.current?.goToFraction(drag / 1000);
+    setDrag(null);
+  }
+
+  const percent = drag != null ? Math.round(drag / 10) : loc ? Math.round((loc.fraction ?? 0) * 100) : 0;
   const where = fixed
     ? loc?.section
       ? `第 ${loc.section.current + 1} / ${loc.section.total} 页`
@@ -573,7 +728,18 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
   const togglePanel = (p: Panel) => setPanel((cur) => (cur === p ? null : p));
 
   return (
-    <section ref={host} className="relative flex min-w-0 flex-1 flex-col bg-bg">
+    <section
+      ref={host}
+      className="relative flex min-w-0 flex-1 flex-col bg-bg"
+      onPointerDown={(e) => {
+        // 点在浮层外面就收起来（点浮层自己、点打开它的按钮不算）
+        const t = e.target as HTMLElement;
+        if (t.closest("[data-selection-menu], [data-floating], [data-floating-toggle]")) return;
+        setPopup(null);
+        setFootnote(null);
+        setShowPrefs(false);
+      }}
+    >
       <header className="flex items-center gap-1 border-b border-hairline-soft px-3 py-2">
         <button className={tool(panel === "toc")} title="目录" aria-label="目录" onClick={() => togglePanel("toc")}>
           <List className="h-4 w-4" />
@@ -600,7 +766,13 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
         >
           {here ? <BookmarkCheck className="h-4 w-4" /> : <Bookmark className="h-4 w-4" />}
         </button>
-        <button className={tool(showPrefs)} title="阅读设置" aria-label="阅读设置" onClick={() => setShowPrefs((v) => !v)}>
+        <button
+          data-floating-toggle
+          className={tool(showPrefs)}
+          title="阅读设置"
+          aria-label="阅读设置"
+          onClick={() => setShowPrefs((v) => !v)}
+        >
           <Type className="h-4 w-4" />
         </button>
         <ModalCloseButton ariaLabel="关闭文档" onClick={onClose} />
@@ -649,6 +821,7 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
                   onSearch={(q) => void runSearch(q)}
                   onClear={closeSearch}
                   searching={searching}
+                  searched={searched}
                   results={results}
                   onGo={goTo}
                 />
@@ -706,15 +879,18 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
           type="range"
           min={0}
           max={1000}
-          value={Math.round((loc?.fraction ?? 0) * 1000)}
-          onChange={(e) => void viewRef.current?.goToFraction(Number(e.target.value) / 1000)}
+          value={drag ?? Math.round((loc?.fraction ?? 0) * 1000)}
+          onChange={(e) => setDrag(Number(e.target.value))}
+          onPointerUp={commitDrag}
+          onKeyUp={commitDrag}
+          onBlur={commitDrag}
           className="reader-progress min-w-0 flex-1"
           aria-label="阅读进度"
         />
         <span className="num w-9 shrink-0 text-right">{percent}%</span>
       </footer>
 
-      {showPrefs && <PrefsPopover prefs={prefs} fixed={fixed} onChange={updatePrefs} onClose={() => setShowPrefs(false)} />}
+      {showPrefs && <PrefsPopover prefs={prefs} fixed={fixed} onChange={updatePrefs} />}
 
       {popup && (
         <SelectionPopup
@@ -744,6 +920,7 @@ export function Reader({ doc, target, notesVersion, onClose, onSelection, onAskN
 
       {/* 脚注浮层：容器一直在，引擎往里放内容 */}
       <div
+        data-floating
         className={`absolute z-20 w-[340px] -translate-x-1/2 overflow-hidden rounded-xl border border-hairline-strong shadow-[0_10px_32px_-8px_rgb(0_0_0/0.3)] ${footnote ? "" : "pointer-events-none invisible"}`}
         style={{
           left: Math.min(Math.max(footnote?.x ?? 0, 180), (host.current?.clientWidth ?? 800) - 180),

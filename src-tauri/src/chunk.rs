@@ -29,12 +29,6 @@ fn len(s: &str) -> usize {
     s.chars().count()
 }
 
-/// 取末尾 n 个字符
-fn tail(s: &str, n: usize) -> String {
-    let total = len(s);
-    s.chars().skip(total.saturating_sub(n)).collect()
-}
-
 pub fn split_text(text: &str, target: usize, overlap: usize) -> Vec<String> {
     let clean = text.replace("\r\n", "\n");
     let clean = clean.trim();
@@ -72,35 +66,47 @@ pub fn split_text(text: &str, target: usize, overlap: usize) -> Vec<String> {
     pieces
 }
 
-/// 超长段落按句子边界切，带重叠；连标点都没有的长串按长度硬切
+/// 超长段落按句子边界切，带重叠；连标点都没有的长串按长度硬切。
+///
+/// 全程在字符数组上用下标前进：之前每切一块都把剩下的整段重新复制、重新数一遍字数，
+/// 一个 10 MB 的单行文件要切上万次，导入会卡死在它上面。
 fn hard_split(text: &str, target: usize, overlap: usize) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut buf = String::new();
-    let mut sentence = String::new();
-    let flush_sentence = |sentence: &mut String, buf: &mut String, out: &mut Vec<String>| {
-        if len(buf) + len(sentence) > target && !buf.is_empty() {
-            out.push(buf.trim().to_string());
-            *buf = tail(buf, overlap);
-        }
-        buf.push_str(sentence);
-        sentence.clear();
-        while len(buf) > target * 3 / 2 {
-            let head: String = buf.chars().take(target).collect();
-            out.push(head.trim().to_string());
-            *buf = buf.chars().skip(target - overlap).collect();
-        }
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let is_end = |i: usize| {
+        matches!(chars[i], '。' | '！' | '？' | '!' | '?' | '；' | ';' | '\n')
+            // 英文句号后面跟着空白才算一句的结尾（不然小数、缩写都会被切开）
+            || (chars[i] == '.' && chars.get(i + 1).is_some_and(|c| c.is_whitespace()))
     };
-    for c in text.chars() {
-        sentence.push(c);
-        if matches!(c, '。' | '！' | '？' | '!' | '?' | '；' | ';' | '\n') {
-            flush_sentence(&mut sentence, &mut buf, &mut out);
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < n {
+        let hi = (start + target).min(n);
+        // 在后半段里找最后一个句子结尾；没有就按目标长度硬切
+        let cut = if hi == n {
+            n
+        } else {
+            (start + target / 2..hi)
+                .rev()
+                .find(|&i| is_end(i))
+                .map(|i| i + 1)
+                .unwrap_or(hi)
+        };
+        out.push(chars[start..cut].iter().collect::<String>());
+        if cut == n {
+            break;
         }
+        // 下一块往回带一点重叠，但必须往前走
+        start = if cut > start + overlap {
+            cut - overlap
+        } else {
+            cut
+        };
     }
-    flush_sentence(&mut sentence, &mut buf, &mut out);
-    if !buf.trim().is_empty() {
-        out.push(buf.trim().to_string());
-    }
-    out.into_iter().filter(|s| !s.is_empty()).collect()
+    out.into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 #[cfg(test)]
@@ -126,6 +132,23 @@ mod tests {
         let parts = split_text(&"x".repeat(5000), 400, 40);
         assert!(parts.len() > 5);
         assert!(parts.iter().map(|p| len(p)).sum::<usize>() >= 5000);
+    }
+
+    #[test]
+    fn 巨大的单行文本很快切完_英文按句号断开() {
+        let big = "0123456789".repeat(300_000); // 3 MB，一个标点都没有
+        let t = std::time::Instant::now();
+        let parts = split_text(&big, TARGET, OVERLAP);
+        assert!(t.elapsed().as_secs() < 5, "切得太慢：{:?}", t.elapsed());
+        assert!(parts.len() > 3000 && parts.iter().all(|p| len(p) <= TARGET * 3 / 2));
+
+        let english = "This is a sentence about version 3.14 of the engine. ".repeat(60);
+        let parts = split_text(&english, 300, 40);
+        assert!(parts.len() > 5);
+        assert!(
+            parts.iter().all(|p| p.ends_with('.')),
+            "应在句号处断开：{parts:?}"
+        );
     }
 
     #[test]

@@ -87,7 +87,14 @@ export type Block =
       result?: string;
       isError?: boolean;
       /** 等待用户审批时带着 requestId；处理完后记录结果 */
-      approval?: { requestId: string; state: "pending" | "allowed" | "denied"; canRemember?: boolean };
+      approval?: {
+        requestId: string;
+        /** expired：提问已经结束（被停止、出错、或是从历史里读出来的），这张卡片不再能点 */
+        state: "pending" | "allowed" | "denied" | "expired";
+        canRemember?: boolean;
+        /** 选「记住」会放行什么，原样展示给用户 */
+        rememberLabel?: string;
+      };
     };
 
 /** 用户在阅读器里选中的一段原文，随问题一起发给助手 */
@@ -166,6 +173,31 @@ export type AgentEvent =
   | { type: "delta"; id: string; text: string }
   | { type: "tool"; id: string; toolUseId: string; name: string; input: Record<string, unknown> }
   | { type: "tool_result"; id: string; toolUseId: string; text: string; isError: boolean }
-  | { type: "approval_request"; id: string; requestId: string; name: string; input: Record<string, unknown>; canRemember?: boolean }
+  | {
+      type: "approval_request"; id: string; requestId: string; name: string; input: Record<string, unknown>;
+      canRemember?: boolean; rememberLabel?: string;
+    }
+  | ({ type: "reader_action"; id: string } & ReaderCommand)
   | { type: "result"; id: string; text: string; sessionId: string | null; costUsd: number | null; turns: number | null; hits: Hit[] }
-  | { type: "error"; id?: string; message: string };
+  | { type: "error"; id?: string; message: string; hits?: Hit[]; sessionId?: string | null };
+
+/** 助手让阅读器做的事：在书里划线，或者翻到某一处 */
+export interface ReaderCommand {
+  callId: string;
+  action: "highlight" | "goto";
+  docId: string;
+  quote?: string | null;
+  note?: string;
+  color?: HighlightColor;
+  page?: number | null;
+}
+
+/** 阅读器当前的位置，提问时带给助手 */
+export interface ReadingInfo {
+  docId: string;
+  docTitle: string;
+  /** PDF 的页码 / EPUB 的第几节；其它格式没有 */
+  page: number | null;
+  chapter: string;
+  fraction: number;
+}

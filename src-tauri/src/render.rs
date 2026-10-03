@@ -122,6 +122,13 @@ impl Builder {
         self.html.push_str(html);
         self.chars += chars;
     }
+    /// 在两个块之间调用：没有标题的长文档（很多 Word 文档用加粗代替标题样式）
+    /// 不能排成一个几十万字的节，攒够了就在这里强制换节
+    fn break_if_long(&mut self) {
+        if self.chars >= SECTION_CHARS * 2 {
+            self.flush();
+        }
+    }
     fn finish(mut self) -> Book {
         self.flush();
         if self.sections.is_empty() {
@@ -143,7 +150,14 @@ pub fn markdown(src: &str) -> Book {
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_FOOTNOTES;
-    let events: Vec<Event> = Parser::new_ext(src, opts).collect();
+    // 文档里夹带的原始 HTML 当成文字显示，不让它进页面：<style> 能把阅读器排版弄乱，
+    // <script>、<iframe> 更不该从一份文档里跑出来
+    let events: Vec<Event> = Parser::new_ext(src, opts)
+        .map(|e| match e {
+            Event::Html(h) | Event::InlineHtml(h) => Event::Text(h),
+            other => other,
+        })
+        .collect();
     let mut b = Builder::new();
     let mut i = 0;
     // 按顶层块切：标题单独处理（要加锚点、进目录），其它块原样交给 pulldown 出 HTML
@@ -205,6 +219,7 @@ pub fn markdown(src: &str) -> Book {
         let mut body = String::new();
         html::push_html(&mut body, block.iter().cloned());
         b.push(&body, chars);
+        b.break_if_long();
         i = end + 1;
     }
     b.finish()
@@ -303,7 +318,11 @@ pub fn docx(bytes: &[u8]) -> Result<Book> {
         zip::ZipArchive::new(std::io::Cursor::new(bytes)).context("不是有效的 DOCX 文件")?;
     let mut read = |name: &str| -> Option<String> {
         let mut s = String::new();
-        zip.by_name(name).ok()?.read_to_string(&mut s).ok()?;
+        zip.by_name(name)
+            .ok()?
+            .take(crate::ebook::MAX_ENTRY)
+            .read_to_string(&mut s)
+            .ok()?;
         Some(s)
     };
     let xml = read("word/document.xml").ok_or_else(|| anyhow!("DOCX 里找不到正文"))?;
@@ -379,6 +398,9 @@ pub fn docx(bytes: &[u8]) -> Result<Book> {
                         None => format!("<p>{para}</p>\n"),
                     };
                     b.push(&html, chars);
+                    if table_depth == 0 {
+                        b.break_if_long();
+                    }
                 }
                 "w:tc" => b.push("</td>", 0),
                 "w:tr" => b.push("</tr>", 0),
@@ -435,6 +457,21 @@ mod tests {
         assert!(chapter_title("第十二回 风雪"));
         assert!(chapter_title("Chapter 3"));
         assert!(!chapter_title("第一次见面"));
+    }
+
+    #[test]
+    fn 没有标题的长文也会分节_原始html不进页面() {
+        let para = format!("{}\n\n", "字".repeat(1000));
+        let book = markdown(&para.repeat(100));
+        assert!(book.sections.len() >= 2, "10 万字不该排成一节");
+        let book =
+            markdown("正文 <script>alert(1)</script>\n\n<style>body{display:none}</style>\n");
+        let html = &book.sections[0].html;
+        assert!(
+            !html.contains("<script>") && !html.contains("<style>"),
+            "{html}"
+        );
+        assert!(html.contains("&lt;script&gt;"));
     }
 
     #[test]

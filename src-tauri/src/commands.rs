@@ -43,7 +43,10 @@ fn collect_files(paths: &[String]) -> Vec<PathBuf> {
             let walker = walkdir::WalkDir::new(path)
                 .max_depth(8)
                 .into_iter()
-                .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'));
+                // 用户亲手选的那个文件夹即使以 . 开头也要进；里面的隐藏项才跳过
+                .filter_entry(|e| {
+                    e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.')
+                });
             for entry in walker.flatten() {
                 if entry.file_type().is_file() && parse::kind_of(entry.path()).is_some() {
                     out.push(entry.into_path());
@@ -192,13 +195,13 @@ pub async fn document_text(state: State<'_, AppState>, doc_id: String) -> Result
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_documents(state: State<'_, AppState>) -> Result<Vec<DocOut>, String> {
     let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
     db::list_documents(&conn).map_err(e)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_document(state: State<'_, AppState>, doc_id: String) -> Result<(), String> {
     let mut conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
     db::delete_document(&mut conn, &doc_id).map_err(e)
@@ -247,7 +250,7 @@ pub fn spawn_fill_vectors(app: AppHandle) {
 }
 
 /// 设置里改了向量接口之后调一下
-#[tauri::command]
+#[tauri::command(async)]
 pub fn fill_vectors(app: AppHandle) {
     spawn_fill_vectors(app);
 }
@@ -293,7 +296,7 @@ pub async fn document_book(
 
 // ---------- 阅读器：封面、高亮笔记、进度 ----------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn doc_cover(
     state: State<'_, AppState>,
     doc_id: String,
@@ -318,7 +321,7 @@ pub async fn set_doc_cover(
     db::set_cover(&conn, &doc_id, &small).map_err(e)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_annotations(
     state: State<'_, AppState>,
     doc_id: Option<String>,
@@ -328,7 +331,7 @@ pub fn list_annotations(
     db::list_annotations(&conn, ids.as_deref()).map_err(e)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_annotation(
     state: State<'_, AppState>,
     annotation: db::Annotation,
@@ -337,13 +340,13 @@ pub fn save_annotation(
     db::save_annotation(&conn, &annotation).map_err(e)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_annotation(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
     db::delete_annotation(&conn, &id).map_err(e)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reading_state(
     state: State<'_, AppState>,
     doc_id: String,
@@ -352,7 +355,7 @@ pub fn reading_state(
     db::reading_state(&conn, &doc_id).map_err(e)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_reading_state(
     state: State<'_, AppState>,
     doc_id: String,
@@ -363,27 +366,47 @@ pub fn save_reading_state(
     db::save_reading_state(&conn, &doc_id, &location, fraction).map_err(e)
 }
 
-/// 把文字写到用户在「另存为」对话框里选的位置（导出笔记用）
+/// 导出文字（笔记等）：由这边弹「另存为」对话框再写。
+/// 不提供「给个路径就写」的命令——界面里跑着第三方内容（书），不能让它有办法写任意文件。
 #[tauri::command]
-pub fn write_text_file(path: String, content: String) -> Result<(), String> {
-    std::fs::write(&path, content).map_err(|err| format!("写不了 {path}：{err}"))
+pub async fn export_text(
+    app: AppHandle,
+    default_name: String,
+    content: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let name = crate::server::sanitize_filename(&default_name);
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_file_name(&name)
+            .add_filter("Markdown", &["md"])
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(path) = picked.and_then(|p| p.into_path().ok()) else {
+        return Ok(None);
+    };
+    std::fs::write(&path, content).map_err(|err| format!("写不了 {}：{err}", path.display()))?;
+    Ok(Some(path.to_string_lossy().to_string()))
 }
 
 // ---------- 设置 ----------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_setting(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
     let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
     db::get_setting(&conn, &key).map_err(e)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
     let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
     db::set_setting(&conn, &key, &value).map_err(e)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn db_info(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
     let count = |sql: &str| -> Result<i64, String> {
@@ -407,13 +430,13 @@ pub fn db_info(state: State<'_, AppState>) -> Result<serde_json::Value, String> 
 
 // ---------- 会话 ----------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionOut>, String> {
     let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
     db::list_sessions(&conn).map_err(e)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn upsert_session(
     state: State<'_, AppState>,
     id: String,
@@ -424,13 +447,13 @@ pub fn upsert_session(
     db::upsert_session(&conn, &id, &title, sdk_session_id.as_deref()).map_err(e)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
     db::delete_session(&conn, &id).map_err(e)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_message(
     state: State<'_, AppState>,
     session_id: String,
@@ -442,7 +465,7 @@ pub fn add_message(
     db::add_message(&conn, &session_id, &role, &content, meta.as_deref()).map_err(e)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_messages(
     state: State<'_, AppState>,
     session_id: String,
@@ -454,7 +477,7 @@ pub fn get_messages(
 // ---------- agent ----------
 
 /// （重新）启动 sidecar。应用启动时和保存设置后调用。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_start(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let provider: Provider = {
         let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
@@ -485,7 +508,7 @@ pub fn agent_start(app: AppHandle, state: State<'_, AppState>) -> Result<(), Str
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_send(state: State<'_, AppState>, payload: serde_json::Value) -> Result<(), String> {
     let mut slot = state.agent.lock().map_err(|_| "agent 锁异常".to_string())?;
     match slot.as_mut() {
@@ -536,7 +559,7 @@ mcp.json 里写要连接的 MCP 服务：
 
 /// 确保配置目录存在（没有就建好骨架），返回它的路径。
 /// dir 为空表示用户级（~/.docagent），否则是 <dir>/.docagent。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn ensure_config_dir(app: AppHandle, dir: Option<String>) -> Result<String, String> {
     let base = match dir {
         Some(d) if !d.is_empty() => PathBuf::from(d),
@@ -556,10 +579,11 @@ pub fn ensure_config_dir(app: AppHandle, dir: Option<String>) -> Result<String, 
 }
 
 /// 在访达里打开一个文件夹
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_path(path: String) -> Result<(), String> {
-    if !Path::new(&path).exists() {
-        return Err(format!("路径不存在：{path}"));
+    // 只开文件夹：对文件执行 open 等于运行它（.app、.command）
+    if !Path::new(&path).is_dir() {
+        return Err(format!("不是一个文件夹：{path}"));
     }
     std::process::Command::new("open")
         .arg(&path)
