@@ -204,9 +204,13 @@ function Assistant({
 
       {!m.pending && (m.durationMs != null || m.costUsd != null) && (
         <div className="num text-[11px] text-text-4">
-          {m.durationMs != null && `${(m.durationMs / 1000).toFixed(1)}s`}
-          {m.costUsd != null && ` · $${m.costUsd.toFixed(4)}`}
-          {m.hits?.length ? ` · 检索到 ${m.hits.length} 个片段` : ""}
+          {[
+            m.durationMs != null ? `${(m.durationMs / 1000).toFixed(1)}s` : null,
+            m.costUsd != null ? `$${m.costUsd.toFixed(4)}` : null,
+            m.hits?.length ? `检索到 ${m.hits.length} 个片段` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
         </div>
       )}
     </div>

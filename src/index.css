@@ -798,8 +798,25 @@ body, .dark body { background: var(--color-bg); }
 .pdf-page .textLayer { position: absolute; inset: 0; }
 .pdf-page .textLayer span.cite-hl { background: #f5c24266; border-radius: 2px; }
 .pdf-page .textLayer ::selection { background: #c9644255; }
-mark.cite-mark { background: #f5c24255; color: inherit; border-radius: 3px; padding: 2px 0; box-decoration-break: clone; }
-.dark mark.cite-mark { background: #d4a24a55; }
 /* 窄栏里表格第一列（行标题）不要被挤成竖排 */
 .markdown-body [data-streamdown="table-cell"]:first-child,
 .markdown-body [data-streamdown="table-header-cell"]:first-child { white-space: nowrap; }
+
+/* ---------- 阅读器：和对话区同一套纸色与字体 ---------- */
+/* PDF 自带纯白底，用正片叠底压成纸色；暗色下反相，避免一块刺眼的白 */
+.pdf-page { background: var(--color-bg); }
+.pdf-canvas { mix-blend-mode: multiply; }
+.dark .pdf-page { background: #e8e4d8; }
+.dark .pdf-canvas { mix-blend-mode: normal; filter: invert(0.9) hue-rotate(180deg); }
+.dark .pdf-page:has(.pdf-canvas) { background: var(--color-surface-2); }
+
+/* 文本文档：直接排在纸色背景上，不再套一张白卡片 */
+.reader-article { font-size: 16px; line-height: 1.9; color: var(--color-text); }
+.reader-article .markdown-body { font-size: 16px; line-height: 1.9; }
+.reader-article h1 { font-family: var(--font-display); font-size: 26px; line-height: 1.4; margin: 0 0 0.8em; }
+.reader-article h2 { font-family: var(--font-display); font-size: 20px; margin: 1.6em 0 0.5em; }
+.reader-article h3 { font-family: var(--font-display); font-size: 17px; margin: 1.3em 0 0.4em; }
+.reader-article p { margin: 0.75em 0; }
+.reader-article li { margin: 0.3em 0; }
+::highlight(cite) { background-color: #f5c24266; }
+.dark ::highlight(cite) { background-color: #d4a24a55; }

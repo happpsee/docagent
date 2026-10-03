@@ -5,8 +5,8 @@ import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "pdfjs-dist/web/pdf_viewer.css";
 import { BookOpenText, MessageSquareQuote, Search } from "lucide-react";
 import * as api from "@/lib/api";
-import { locate } from "@/lib/citations";
 import type { Doc } from "@/lib/types";
+import { StreamMarkdown } from "./StreamMarkdown";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -41,10 +41,10 @@ export function Reader({ doc, target, onClose, onSelection }: Props) {
   const [pages, setPages] = useState<number | null>(doc.pages);
 
   return (
-    <section ref={root} className="relative flex min-w-0 flex-1 flex-col bg-bg-grad-b/50">
+    <section ref={root} className="relative flex min-w-0 flex-1 flex-col bg-bg">
       <SelectionMenu root={root} onAction={onSelection} />
-      <header className="flex items-center gap-3 border-b border-hairline bg-bg px-5 py-2.5">
-        <div className="min-w-0 flex-1 truncate text-[13px] font-medium text-text">{doc.title}</div>
+      <header className="flex items-center gap-3 border-b border-hairline-soft px-6 py-2.5">
+        <div className="min-w-0 flex-1 truncate text-[13px] text-text-2">{doc.title}</div>
         {pages ? (
           <span className="num text-[12px] text-text-3">
             {page} / {pages}
@@ -232,20 +232,21 @@ function PdfPage(p: {
     <div
       ref={box}
       data-page={p.n}
-      className="pdf-page relative bg-white shadow-[0_1px_8px_-2px_rgb(0_0_0/0.18)]"
+      className="pdf-page relative rounded-[3px] border border-hairline"
       style={{ width: p.w, height: p.h, ["--scale-factor" as string]: p.scale, ["--total-scale-factor" as string]: p.scale }}
     >
-      <canvas ref={canvas} className="absolute inset-0 h-full w-full" />
+      <canvas ref={canvas} className="pdf-canvas absolute inset-0 h-full w-full" />
       <div ref={textRef} className="textLayer" />
     </div>
   );
 }
 
-/** 非 PDF：显示提取出的全文，引文用 <mark> 标出 */
+/** 非 PDF：Markdown 正常排版，其它格式按段落显示。
+ *  引文高亮用 CSS Custom Highlight——不改动 DOM，所以渲染后的 Markdown 也能标。 */
 function TextView({ doc, target }: { doc: Doc; target: ReadTarget }) {
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const markRef = useRef<HTMLElement>(null);
+  const article = useRef<HTMLElement>(null);
 
   useEffect(() => {
     let dead = false;
@@ -263,31 +264,83 @@ function TextView({ doc, target }: { doc: Doc; target: ReadTarget }) {
   }, [doc.id]);
 
   useEffect(() => {
-    markRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+    const el = article.current;
+    if (!el || text == null) return;
+    let timer = 0;
+    let tries = 0;
+    // Markdown 是懒加载后才渲染出来的，等内容稳定了再定位
+    const apply = () => {
+      const range = target.quote ? rangeOf(el, target.quote) : null;
+      const reg = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
+      if (range) {
+        reg?.set("cite", new Highlight(range));
+        (range.startContainer.parentElement ?? el).scrollIntoView({ block: "center", behavior: "smooth" });
+      } else {
+        reg?.delete("cite");
+        if (target.quote && tries++ < 10) timer = window.setTimeout(apply, 150);
+      }
+    };
+    timer = window.setTimeout(apply, 60);
+    return () => {
+      clearTimeout(timer);
+      (CSS as unknown as { highlights?: Map<string, unknown> }).highlights?.delete("cite");
+    };
   }, [text, target.quote, target.nonce]);
 
   if (error) return <p className="p-8 text-center text-[13px] text-danger">打不开这份文档：{error}</p>;
   if (text == null) return <p className="arc-shimmer-text p-8 text-center text-[13px]">正在打开…</p>;
 
-  const [at, len] = locate(text, target.quote);
-
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-6">
-      <article className="mx-auto max-w-[720px] whitespace-pre-wrap rounded-sm bg-surface-2 px-12 py-10 text-[15px] leading-8 text-text shadow-[0_1px_8px_-2px_rgb(0_0_0/0.12)]">
-        {at < 0 ? (
-          text
+    <div className="flex-1 overflow-y-auto">
+      <article ref={article} className="reader-article mx-auto max-w-[720px] px-10 pb-24 pt-10">
+        {doc.kind === "md" ? (
+          <StreamMarkdown content={text} />
         ) : (
-          <>
-            {text.slice(0, at)}
-            <mark ref={markRef} className="cite-mark">
-              {text.slice(at, at + len)}
-            </mark>
-            {text.slice(at + len)}
-          </>
+          <div className="whitespace-pre-wrap">{text}</div>
         )}
       </article>
     </div>
   );
+}
+
+/** 比较时去掉空白和 Markdown 标记：引文来自原始文本（带 #、** 等），页面上是渲染后的文字 */
+const strip = (s: string) => s.normalize("NFKC").replace(/[\s#*`>|_~\-\[\]()]/g, "");
+
+/** 在渲染后的 DOM 里找到引文对应的文字范围 */
+function rangeOf(root: HTMLElement, quote: string): Range | null {
+  const q = strip(quote);
+  if (q.length < 2) return null;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const map: { node: Text; offset: number }[] = [];
+  let flat = "";
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const t = (n as Text).data;
+    for (let i = 0; i < t.length; i++) {
+      const c = strip(t[i]);
+      if (c) {
+        // NFKC 可能把一个字符展开成多个，逐个都指回原位置
+        for (const ch of c) {
+          flat += ch;
+          map.push({ node: n as Text, offset: i });
+        }
+      }
+    }
+  }
+  // 整段找不到时退而求其次：用引文开头的一截定位（分块重叠、表格等会造成细微差异）
+  let at = flat.indexOf(q);
+  let len = q.length;
+  if (at < 0) {
+    const head = q.slice(0, Math.min(40, q.length));
+    at = flat.indexOf(head);
+    len = head.length;
+  }
+  if (at < 0) return null;
+  const a = map[at];
+  const b = map[at + len - 1];
+  const range = document.createRange();
+  range.setStart(a.node, a.offset);
+  range.setEnd(b.node, b.offset + 1);
+  return range;
 }
 
 /** 划词菜单：在阅读器里选中文字后浮出来，三个动作都会带着引文发到对话里 */
