@@ -21,3 +21,23 @@ export function citedNumbers(text: string): number[] {
   for (const p of splitCitations(text)) if (p.type === "cite") set.add(p.n);
   return [...set].sort((a, b) => a - b);
 }
+
+/** 在全文里找引文的位置，忽略空白差异（分块时段落间的换行会被合并）。返回 [起点, 长度] */
+export function locate(text: string, quote?: string): [number, number] {
+  const q = quote ? quote.replace(/\s+/g, "") : "";
+  if (!q) return [-1, 0];
+  // 去掉空白后的每个字符对应原文的下标
+  const map: number[] = [];
+  let flat = "";
+  for (let i = 0; i < text.length; i++) {
+    if (!/\s/.test(text[i])) {
+      map.push(i);
+      flat += text[i];
+    }
+  }
+  const at = flat.indexOf(q);
+  if (at < 0) return [-1, 0];
+  const start = map[at];
+  const end = map[at + q.length - 1] + 1;
+  return [start, end - start];
+}

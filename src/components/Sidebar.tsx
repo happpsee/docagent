@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, FileText, Plus, Settings as SettingsIcon, SquarePen, Trash2 } from "lucide-react";
+import { ChevronDown, CircleCheck, FileText, PanelLeft, Plus, Settings as SettingsIcon, SquarePen, Trash2 } from "lucide-react";
 import * as api from "@/lib/api";
 import { chunkPages } from "@/lib/chunk";
 import { kindFromName, parseFile } from "@/lib/parse";
@@ -12,6 +12,11 @@ interface Props {
   docs: Doc[];
   selected: Set<string>;
   status: { text: string; tone: "ok" | "warn" | "bad" | "idle" };
+  /** 收成一条窄边（阅读文档时把空间让给正文） */
+  collapsed: boolean;
+  readingId: string | null;
+  onToggleCollapsed: () => void;
+  onOpenDoc: (d: Doc) => void;
   onNewChat: () => void;
   onOpenSession: (s: Session) => void;
   onDeleteSession: (s: Session) => void;
@@ -63,10 +68,38 @@ export function Sidebar(p: Props) {
 
   const tone = { ok: "bg-good", warn: "bg-warm", bad: "bg-danger", idle: "bg-track-idle" }[p.status.tone];
 
+  if (p.collapsed) {
+    const btn = "grid h-8 w-8 place-items-center rounded-lg text-text-3 hover:bg-nav-card hover:text-text";
+    return (
+      <aside className="flex w-[52px] shrink-0 flex-col items-center gap-1 border-r border-hairline bg-bg-grad-b/60 py-3">
+        <button className={btn} aria-label="展开侧栏" onClick={p.onToggleCollapsed}>
+          <PanelLeft className="h-4 w-4" />
+        </button>
+        <button className={btn} aria-label="新对话" onClick={p.onNewChat}>
+          <SquarePen className="h-4 w-4" />
+        </button>
+        <span className="flex-1" />
+        <button className={`${btn} relative`} aria-label="设置" onClick={p.onOpenSettings}>
+          <SettingsIcon className="h-4 w-4" />
+          <span className={`absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full ${tone}`} />
+        </button>
+      </aside>
+    );
+  }
+
   return (
     <aside className="flex w-[264px] shrink-0 flex-col border-r border-hairline bg-bg-grad-b/60">
       <div className="px-3 pb-1 pt-3.5">
-        <div className="px-2 text-[14px] font-semibold tracking-tight text-text">DocAgent</div>
+        <div className="flex items-center px-2">
+          <span className="flex-1 text-[14px] font-semibold tracking-tight text-text">DocAgent</span>
+          <button
+            className="grid h-6 w-6 place-items-center rounded-md text-text-4 hover:bg-nav-card hover:text-text"
+            aria-label="收起侧栏"
+            onClick={p.onToggleCollapsed}
+          >
+            <PanelLeft className="h-3.5 w-3.5" />
+          </button>
+        </div>
         <button
           className="mt-3 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] text-text hover:bg-nav-card"
           onClick={p.onNewChat}
@@ -102,34 +135,39 @@ export function Sidebar(p: Props) {
 
         {docsOpen &&
           (p.docs.length ? (
-            p.docs.map((d) => (
-              <label
-                key={d.id}
-                className={`group flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] ${
-                  p.selected.has(d.id) ? "bg-accent-dim text-text" : "text-text-2 hover:bg-nav-card"
-                }`}
-                title={`${d.title}\n${d.kind.toUpperCase()}${d.pages ? ` · ${d.pages} 页` : ""} · ${d.chunkCount} 个片段`}
-              >
-                <input
-                  type="checkbox"
-                  className="peer sr-only"
-                  checked={p.selected.has(d.id)}
-                  onChange={() => p.onToggleDoc(d.id)}
-                />
-                <FileText className={`h-3.5 w-3.5 shrink-0 ${p.selected.has(d.id) ? "text-accent" : "text-text-4"}`} />
-                <span className="min-w-0 flex-1 truncate">{d.title}</span>
-                <button
-                  className="opacity-0 transition-opacity group-hover:opacity-100"
-                  aria-label="删除文档"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    void api.deleteDocument(d.id).then(p.onDocsChanged, (err) => p.onError(String(err)));
-                  }}
+            p.docs.map((d) => {
+              const on = p.selected.has(d.id);
+              return (
+                <div
+                  key={d.id}
+                  className={`group flex items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] ${
+                    d.id === p.readingId ? "bg-nav-card-active text-text" : "text-text-2 hover:bg-nav-card"
+                  }`}
+                  title={`${d.title}\n${d.kind.toUpperCase()}${d.pages ? ` · ${d.pages} 页` : ""} · ${d.chunkCount} 个片段`}
                 >
-                  <Trash2 className="h-3.5 w-3.5 text-text-4 hover:text-danger" />
-                </button>
-              </label>
-            ))
+                  <FileText className={`h-3.5 w-3.5 shrink-0 ${on ? "text-accent" : "text-text-4"}`} />
+                  <button className="min-w-0 flex-1 truncate text-left" onClick={() => p.onOpenDoc(d)}>
+                    {d.title}
+                  </button>
+                  <button
+                    className="hidden group-hover:block"
+                    aria-label="删除文档"
+                    onClick={() => void api.deleteDocument(d.id).then(p.onDocsChanged, (err) => p.onError(String(err)))}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-text-4 hover:text-danger" />
+                  </button>
+                  <button
+                    className={on ? "" : "opacity-0 group-hover:opacity-100"}
+                    aria-label={on ? "取消限定" : "只检索这份"}
+                    aria-pressed={on}
+                    title={on ? "已限定在这份文档里检索，点击取消" : "只在这份文档里检索"}
+                    onClick={() => p.onToggleDoc(d.id)}
+                  >
+                    <CircleCheck className={`h-3.5 w-3.5 ${on ? "text-accent" : "text-text-4 hover:text-text"}`} />
+                  </button>
+                </div>
+              );
+            })
           ) : (
             <button
               className="w-full rounded-lg border border-dashed border-hairline-strong px-2 py-3 text-[12px] text-text-3 hover:border-accent hover:text-accent"
@@ -140,7 +178,7 @@ export function Sidebar(p: Props) {
           ))}
         {docsOpen && p.docs.length > 0 && (
           <p className="px-2 pt-1 text-[11px] text-text-4">
-            {p.selected.size ? `只检索选中的 ${p.selected.size} 份 · 点击取消` : "点击文档可限定检索范围"}
+            {p.selected.size ? `只检索打勾的 ${p.selected.size} 份` : "点文档打开阅读"}
           </p>
         )}
 

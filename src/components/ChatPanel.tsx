@@ -7,6 +7,8 @@ import { Composer } from "./Composer";
 
 interface Props {
   title: string | null;
+  /** 旁边开着文档时，对话缩在右侧窄栏里 */
+  compact?: boolean;
   messages: Message[];
   busy: boolean;
   /** 本轮开始的时间戳，用来显示已用时 */
@@ -58,14 +60,18 @@ export function ChatPanel(p: Props) {
     const hour = new Date().getHours();
     const hello = hour < 6 ? "夜深了" : hour < 12 ? "早上好" : hour < 18 ? "下午好" : "晚上好";
     return (
-      <section className="flex min-w-0 flex-1 flex-col items-center justify-center px-6 pb-[8vh]">
+      <section className={`flex min-w-0 flex-1 flex-col items-center justify-center pb-[8vh] ${p.compact ? "px-4" : "px-6"}`}>
         <div className="w-full max-w-[680px]">
-          <h1 className="display-serif flex items-center justify-center gap-3 text-[32px] tracking-tight text-text">
+          <h1
+            className={`display-serif flex items-center justify-center gap-3 tracking-tight text-text ${
+              p.compact ? "text-[20px]" : "text-[32px]"
+            }`}
+          >
             <span className="text-accent">✳</span>
-            {hello}，想了解点什么？
+            {p.compact ? "就这份文档问点什么？" : `${hello}，想了解点什么？`}
           </h1>
           <div className="mt-7">{composer}</div>
-          {p.docCount > 0 ? (
+          {p.compact ? null : p.docCount > 0 ? (
             <div className="mt-4 flex flex-wrap justify-center gap-2">
               {SUGGESTIONS.map((s) => (
                 <button
@@ -90,12 +96,12 @@ export function ChatPanel(p: Props) {
 
   return (
     <section className="flex min-w-0 flex-1 flex-col">
-      {p.title && (
+      {p.title && !p.compact && (
         <header className="truncate px-6 py-3 text-[13px] text-text-3">{p.title}</header>
       )}
 
       <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-[740px] flex-col gap-6 px-6 pb-8 pt-2">
+        <div className={`mx-auto flex max-w-[740px] flex-col gap-6 pb-8 ${p.compact ? "px-4 pt-4" : "px-6 pt-2"}`}>
           {p.messages.map((m, i) =>
             m.role === "user" ? (
               <div key={i} className="flex justify-end">
@@ -117,7 +123,7 @@ export function ChatPanel(p: Props) {
         </div>
       </div>
 
-      <div className="mx-auto w-full max-w-[740px] px-6 pb-3">
+      <div className={`mx-auto w-full max-w-[740px] pb-3 ${p.compact ? "px-3" : "px-6"}`}>
         {composer}
         <p className="mt-2 text-center text-[11px] text-text-4">
           回答可能出错。带编号的结论来自你的文档，点开可以核对原文。

@@ -793,3 +793,13 @@ body, .dark body { background: var(--color-bg); }
 .markdown-body code:not(pre code) {
     background: var(--color-segment-bg); padding: 1px 5px; border-radius: 5px; font-size: 0.9em;
 }
+
+/* 阅读器：引文高亮。PDF 的文字层是透明文本，高亮用半透明底色叠在画面上 */
+.pdf-page .textLayer { position: absolute; inset: 0; }
+.pdf-page .textLayer span.cite-hl { background: #f5c24266; border-radius: 2px; }
+.pdf-page .textLayer ::selection { background: #c9644255; }
+mark.cite-mark { background: #f5c24255; color: inherit; border-radius: 3px; padding: 2px 0; box-decoration-break: clone; }
+.dark mark.cite-mark { background: #d4a24a55; }
+/* 窄栏里表格第一列（行标题）不要被挤成竖排 */
+.markdown-body [data-streamdown="table-cell"]:first-child,
+.markdown-body [data-streamdown="table-header-cell"]:first-child { white-space: nowrap; }

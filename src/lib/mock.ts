@@ -1,12 +1,14 @@
 /** 预览用的假数据：不在 Tauri 里运行时（直接用浏览器打开 dev server）走这里，
  *  方便调界面。不参与正式构建后的任何逻辑。 */
+import samplePdf from "../../test-docs/采购合同.pdf?url";
+import sampleMd from "../../test-docs/服务协议.md?raw";
 import type { Hit, Message } from "./types";
 
 const hits: Hit[] = [
-  { chunkId: 1, docId: "d1", docTitle: "采购合同.pdf", idx: 2, page: 3, distance: 1.02,
-    text: "第三条 付款条款：付款分三期。合同签订后 5 个工作日内支付 30% 预付款；设备验收合格后 15 个工作日内支付 60%；质保期满后支付剩余 10% 尾款。" },
+  { chunkId: 1, docId: "d1", docTitle: "采购合同.pdf", idx: 2, page: 1, distance: 1.02,
+    text: "第三条 付款条款 付款分三期： 1. 合同签订后 5 个工作日内支付 30% 预付款； 2. 设备验收合格后 15 个工作日内支付 60%； 3. 质保期满后支付剩余 10% 尾款。 逾期付款的，每日按未付金额的 0.03% 计违约金。" },
   { chunkId: 2, docId: "d2", docTitle: "服务协议.md", idx: 2, page: null, distance: 1.11,
-    text: "第三条 付款条款：服务费为每年 96000 元，按季度支付，每季度首月 10 日前支付 24000 元。甲方逾期支付超过 15 日的，乙方有权暂停服务。" },
+    text: "服务费为每年 96000 元，按季度支付，每季度首月 10 日前支付 24000 元。\n甲方逾期支付超过 15 日的，乙方有权暂停服务。" },
 ];
 
 const messages: Message[] = [
@@ -33,8 +35,8 @@ const messages: Message[] = [
 
 const store: Record<string, unknown> = {
   list_documents: [
-    { id: "d1", title: "采购合同.pdf", path: null, kind: "pdf", pages: 12, chunk_count: 34, created_at: 0 },
-    { id: "d2", title: "服务协议.md", path: null, kind: "md", pages: null, chunk_count: 8, created_at: 0 },
+    { id: "d1", title: "采购合同.pdf", path: "sample.pdf", kind: "pdf", pages: 3, chunk_count: 34, created_at: 0 },
+    { id: "d2", title: "服务协议.md", path: "sample.md", kind: "md", pages: null, chunk_count: 8, created_at: 0 },
     { id: "d3", title: "第一集剧本（定稿）.docx", path: null, kind: "docx", pages: null, chunk_count: 61, created_at: 0 },
   ],
   list_sessions: [
@@ -50,6 +52,12 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
   if (cmd === "get_messages") {
     const meta = (m: Message) => JSON.stringify({ blocks: m.blocks, hits: m.hits, costUsd: m.costUsd, durationMs: m.durationMs });
     return (args?.sessionId === "s1" ? messages.map((m) => ({ role: m.role, content: m.content, meta: meta(m) })) : []) as T;
+  }
+  if (cmd === "read_file_bytes") {
+    const buf = String(args?.path).endsWith(".pdf")
+      ? new Uint8Array(await (await fetch(samplePdf)).arrayBuffer())
+      : new TextEncoder().encode(sampleMd);
+    return Array.from(buf) as T;
   }
   return (store[cmd] ?? null) as T;
 }

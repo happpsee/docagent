@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
-import { Viewer } from "./components/Viewer";
+import { Reader, type ReadTarget } from "./components/Reader";
 import * as api from "./lib/api";
 import {
   DEFAULT_SETTINGS,
@@ -29,7 +29,8 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [cite, setCite] = useState<Hit | null>(null);
+  const [reading, setReading] = useState<ReadTarget | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
   // 事件回调里要读最新值，用 ref 避免闭包拿到旧状态
@@ -181,8 +182,11 @@ export function App() {
       if (api.isPreview && location.search.includes("chat")) {
         const list = await api.listSessions();
         if (list[0]) {
-          setMessages(await api.getMessages(list[0].id));
+          const msgs = await api.getMessages(list[0].id);
+          setMessages(msgs);
           setCurrent(list[0]);
+          const h = msgs.at(-1)?.hits?.[location.search.includes("readmd") ? 1 : 0];
+          if (h && location.search.includes("read")) openHit(h);
         }
       }
       try {
@@ -261,7 +265,7 @@ export function App() {
     if (busy) return;
     setCurrent(null);
     setMessages([]);
-    setCite(null);
+    setReading(null);
   }
 
   async function openSession(s: Session) {
@@ -269,7 +273,7 @@ export function App() {
     try {
       setMessages(await api.getMessages(s.id));
       setCurrent(s);
-      setCite(null);
+      setReading(null);
     } catch (err) {
       setError(String(err));
     }
@@ -279,6 +283,17 @@ export function App() {
     await api.deleteSession(s.id);
     if (current?.id === s.id) newChat();
     refreshSessions();
+  }
+
+  /** 打开文档阅读：侧栏自动收起，把空间让给正文 */
+  function openDoc(docId: string, page?: number | null, quote?: string) {
+    setReading({ docId, page, quote, nonce: Date.now() });
+    setCollapsed(true);
+  }
+  const openHit = (h: Hit) => openDoc(h.docId, h.page, h.text);
+  function closeReader() {
+    setReading(null);
+    setCollapsed(false);
   }
 
   function answerApproval(requestId: string, allow: boolean) {
@@ -298,6 +313,8 @@ export function App() {
     ready: { text: settings.model, tone: "ok" as const },
     down: { text: "助手已断开 · 点击重连", tone: "bad" as const },
   }[agent];
+
+  const readingDoc = reading ? (docs.find((d) => d.id === reading.docId) ?? null) : null;
 
   return (
     <div className="flex h-screen flex-col">
@@ -331,28 +348,29 @@ export function App() {
           onDocsChanged={refreshDocs}
           onOpenSettings={() => setShowSettings(true)}
           onError={setError}
+          collapsed={collapsed}
+          readingId={reading?.docId ?? null}
+          onToggleCollapsed={() => setCollapsed((v) => !v)}
+          onOpenDoc={(d) => openDoc(d.id)}
         />
-        <ChatPanel
-          title={current?.title ?? null}
-          messages={messages}
-          busy={busy}
-          startedAt={startedAt}
-          ready={agent === "ready"}
-          model={settings.model}
-          docCount={docs.length}
-          scopeCount={selected.size}
-          onSend={(q) => void send(q)}
-          onStop={stop}
-          onCite={setCite}
-          onApproval={answerApproval}
-        />
-        {cite && (
-          <Viewer
-            hit={cite}
-            docPath={docs.find((d) => d.id === cite.docId)?.path ?? null}
-            onClose={() => setCite(null)}
+        {readingDoc && reading && <Reader doc={readingDoc} target={reading} onClose={closeReader} />}
+        <div className={readingDoc ? "flex w-[400px] shrink-0 border-l border-hairline" : "flex min-w-0 flex-1"}>
+          <ChatPanel
+            title={current?.title ?? null}
+            compact={!!readingDoc}
+            messages={messages}
+            busy={busy}
+            startedAt={startedAt}
+            ready={agent === "ready"}
+            model={settings.model}
+            docCount={docs.length}
+            scopeCount={selected.size}
+            onSend={(q) => void send(q)}
+            onStop={stop}
+            onCite={openHit}
+            onApproval={answerApproval}
           />
-        )}
+        </div>
       </main>
 
       {showSettings && (
