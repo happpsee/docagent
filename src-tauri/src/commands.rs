@@ -106,6 +106,18 @@ fn import_one(
     Ok(())
 }
 
+/// 解析库遇到畸形文件可能 panic；兜住，变成这一个文件的失败，不连累同一批的其它文件
+fn import_guarded(
+    conn: &std::sync::Mutex<rusqlite::Connection>,
+    path: &Path,
+    on_stage: impl Fn(&'static str),
+) -> anyhow::Result<()> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        import_one(conn, path, on_stage)
+    }))
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("这个文件的结构解析不了")))
+}
+
 /// 导入文件或文件夹。解析在后台线程做，进度通过 import-progress 事件推给界面。
 #[tauri::command]
 pub async fn import_paths(
@@ -138,7 +150,7 @@ pub async fn import_paths(
                     },
                 );
             };
-            match import_one(&conn, file, |stage| emit(stage, None)) {
+            match import_guarded(&conn, file, |stage| emit(stage, None)) {
                 Ok(()) => {
                     summary.imported += 1;
                     emit("done", None);
@@ -149,6 +161,8 @@ pub async fn import_paths(
                 }
             }
         }
+        // 新片段的向量在后台补，不让导入等接口
+        spawn_fill_vectors(app.clone());
         summary
     })
     .await
@@ -190,10 +204,52 @@ pub fn delete_document(state: State<'_, AppState>, doc_id: String) -> Result<(),
     db::delete_document(&mut conn, &doc_id).map_err(e)
 }
 
+/// 重建索引：按原文件把每份文档重新解析一遍。文档上的划线、笔记、进度都留着。
+/// 原文件已经不在的文档会留在书架上，但搜不到内容，返回值里列出来。
 #[tauri::command]
-pub fn reset_index(state: State<'_, AppState>) -> Result<(), String> {
-    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
-    db::reset_index(&conn).map_err(e)
+pub async fn reset_index(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ImportSummary, String> {
+    let conn = state.conn.clone();
+    let summary = tauri::async_runtime::spawn_blocking(move || -> Result<ImportSummary, String> {
+        let paths = {
+            let mut c = conn.lock().map_err(|_| LOCK.to_string())?;
+            db::clear_index(&mut c).map_err(e)?;
+            db::doc_paths(&c).map_err(e)?
+        };
+        let mut summary = ImportSummary {
+            imported: 0,
+            failed: vec![],
+        };
+        for p in paths {
+            match import_guarded(&conn, Path::new(&p), |_| {}) {
+                Ok(()) => summary.imported += 1,
+                Err(err) => summary.failed.push(format!("{p}：{err}")),
+            }
+        }
+        Ok(summary)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    spawn_fill_vectors(app);
+    Ok(summary)
+}
+
+/// 在后台给还没有向量的片段补向量，进度通过 vector-progress 事件推给界面
+pub fn spawn_fill_vectors(app: AppHandle) {
+    std::thread::spawn(move || {
+        let state = app.state::<AppState>();
+        crate::search::fill_vectors(&state.conn, |p| {
+            let _ = app.emit("vector-progress", p);
+        });
+    });
+}
+
+/// 设置里改了向量接口之后调一下
+#[tauri::command]
+pub fn fill_vectors(app: AppHandle) {
+    spawn_fill_vectors(app);
 }
 
 /// 读一份已导入文档的原文件，给阅读器打开（PDF、EPUB 等）。
@@ -340,6 +396,8 @@ pub fn db_info(state: State<'_, AppState>) -> Result<serde_json::Value, String> 
     Ok(serde_json::json!({
         "docs": count("SELECT COUNT(*) FROM docs")?,
         "chunks": count("SELECT COUNT(*) FROM chunks")?,
+        "vectors": db::vector_counts(&conn).map_err(e)?.0,
+        "embedModel": crate::embed::config(&conn).map(|c| c.model),
         "sessions": count("SELECT COUNT(*) FROM sessions")?,
         "dbPath": state.db_path.to_string_lossy(),
         "dbSizeBytes": size,

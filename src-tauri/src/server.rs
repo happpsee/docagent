@@ -80,20 +80,14 @@ pub fn start(conn: Arc<Mutex<Connection>>, save_dir: PathBuf) -> Result<LocalApi
 
 fn handle_search(conn: &Arc<Mutex<Connection>>, body: &str) -> Result<serde_json::Value> {
     let req: SearchReq = serde_json::from_str(body)?;
-    let conn = conn.lock().map_err(|_| anyhow::anyhow!("数据库锁异常"))?;
-    let hits = db::search_text(
-        &conn,
-        &req.query,
-        req.k.unwrap_or(6),
-        req.doc_ids.as_deref(),
-    )?;
+    let hits = crate::search::hybrid(conn, &req.query, req.k.unwrap_or(6), req.doc_ids.as_deref())?;
     // sidecar 和前端都用 camelCase
     let hits: Vec<_> = hits
         .into_iter()
         .map(|h| {
             serde_json::json!({
                 "chunkId": h.chunk_id, "docId": h.doc_id, "docTitle": h.doc_title,
-                "idx": h.idx, "page": h.page, "text": h.text, "distance": h.distance,
+                "idx": h.idx, "page": h.page, "text": h.text, "distance": h.distance, "via": h.via,
             })
         })
         .collect();

@@ -41,6 +41,7 @@ export function App() {
   const [extensions, setExtensions] = useState<Extensions | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [notesVersion, setNotesVersion] = useState(0);
+  const [vectorizing, setVectorizing] = useState<string | null>(null);
 
   // 事件回调里要读最新值，用 ref 避免闭包拿到旧状态
   const askRef = useRef<{ id: string; session: Session; startedAt: number } | null>(null);
@@ -224,9 +225,17 @@ export function App() {
       if (p.stage === "done") refreshDocs();
     });
     const un2 = api.onFileDrop((paths) => void importPaths(paths), setDropHover);
+    // 向量是导入之后在后台补的
+    const un3 = api.onVectorProgress((p) => {
+      if (p.error) {
+        setVectorizing(null);
+        setError(`向量接口出错，已暂停（全文检索不受影响）：${p.error}`);
+      } else setVectorizing(p.done < p.total ? `建立语义索引 ${p.done}/${p.total}` : null);
+    });
     return () => {
       void un1.then((f) => f());
       void un2.then((f) => f());
+      void un3.then((f) => f());
     };
   }, [importPaths, refreshDocs]);
 
@@ -266,6 +275,7 @@ export function App() {
     try {
       await api.setSetting(SETTINGS_KEY, JSON.stringify(s));
       setSettings(s);
+      void api.fillVectors();
       await startAgent();
       setShowSettings(false);
       setError(null);
@@ -489,7 +499,7 @@ export function App() {
           readingId={reading?.docId ?? null}
           onToggleCollapsed={() => setCollapsed((v) => !v)}
           onOpenDoc={(d) => openDoc(d.id)}
-          progress={importing}
+          progress={importing ?? vectorizing}
           onImport={(paths) => void importPaths(paths)}
         />
         {readingDoc && reading && (

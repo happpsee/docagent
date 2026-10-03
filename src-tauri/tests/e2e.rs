@@ -136,8 +136,21 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
     let mut conn = db::open(&tmp.join("test.db")).unwrap();
     // 采购合同用 PDF 版本，顺带验证 PDF 的页码能带到引用里
     for name in ["采购合同.pdf", "服务协议.md"] {
-        let (chunks, kind, pages) = chunks(&root.join("test-docs").join(name));
-        db::add_document_text(&mut conn, name, None, kind, pages, &chunks).unwrap();
+        let path = root.join("test-docs").join(name);
+        let (chunks, kind, pages) = chunks(&path);
+        db::import_document(
+            &mut conn,
+            &db::NewDoc {
+                title: name,
+                path: &path.to_string_lossy(),
+                kind,
+                pages,
+                author: None,
+                cover: None,
+            },
+            &chunks,
+        )
+        .unwrap();
     }
     // 再导入一本 EPUB，并在上面划一条带笔记的高亮（模拟用户在阅读器里的操作）
     let epub = root.join("test-docs/示例小说.epub");
@@ -238,14 +251,14 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
         "应明确说资料里查不到：{}",
         r3.answer
     );
-    // 回答里可以提到合同金额，但不能在说注册资本的那句话里给出数额
-    assert!(
-        !r3.answer
-            .lines()
-            .any(|l| l.contains("注册资本") && l.contains("万元")),
-        "不应编造注册资本的数额：{}",
-        r3.answer
-    );
+    // 回答里可以提到合同里的其它金额，但「注册资本」后面不能紧跟着一个数
+    let invented = r3.answer.match_indices("注册资本").any(|(at, word)| {
+        r3.answer[at + word.len()..]
+            .chars()
+            .take(6)
+            .any(|c| c.is_ascii_digit())
+    });
+    assert!(!invented, "不应编造注册资本的数额：{}", r3.answer);
 
     // 4b. 文档没讲的通用知识：可以用自身知识回答，但要说明不是出自文档，且不能挂引用
     println!("[问] 贸易术语 FOB 是什么意思？");

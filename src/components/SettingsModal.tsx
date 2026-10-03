@@ -36,6 +36,7 @@ export function SettingsModal({ settings, onSave, onClose, onDocsChanged, extens
     const i = await api.dbInfo();
     setInfo(
       `${i.docs} 份文档 · ${i.chunks} 个片段 · ${i.sessions} 个会话 · ${(i.dbSizeBytes / 1048576).toFixed(1)} MB\n` +
+        `语义索引：${i.embedModel ? `${i.vectors ?? 0}/${i.chunks} 个片段（${i.embedModel}）` : "没配向量接口，只用全文检索"}\n` +
         `数据库：${i.dbPath}\n助手保存的文件：${i.saveDir}`,
     );
   }
@@ -49,7 +50,7 @@ export function SettingsModal({ settings, onSave, onClose, onDocsChanged, extens
         <ModalCloseButton onClick={onClose} />
       </div>
 
-      <div className="space-y-4 px-5 py-4 text-[12px] text-text-2">
+      <div className="max-h-[68vh] space-y-4 overflow-y-auto px-5 py-4 text-[12px] text-text-2">
         <label className="block">
           接口地址
           <input className={inputCls} value={s.baseUrl} onChange={(e) => setS({ ...s, baseUrl: e.target.value })} />
@@ -84,6 +85,37 @@ export function SettingsModal({ settings, onSave, onClose, onDocsChanged, extens
         </div>
 
         <div>
+          <div className="mb-1.5 text-text-2">语义检索（可选）</div>
+          <div className="flex gap-3">
+            <label className="block flex-1">
+              向量接口地址
+              <input
+                className={inputCls}
+                value={s.embedBaseUrl}
+                onChange={(e) => setS({ ...s, embedBaseUrl: e.target.value })}
+              />
+            </label>
+            <label className="block w-40">
+              向量模型
+              <input className={inputCls} value={s.embedModel} onChange={(e) => setS({ ...s, embedModel: e.target.value })} />
+            </label>
+          </div>
+          <label className="mt-2 block">
+            向量接口的 API Key
+            <input
+              type="password"
+              className={inputCls}
+              value={s.embedApiKey}
+              onChange={(e) => setS({ ...s, embedApiKey: e.target.value })}
+            />
+          </label>
+          <span className="mt-1 block text-text-4">
+            任何 OpenAI 兼容的向量接口都行。不填也能用，只是按字面找；填了以后换个说法也能找到，
+            但导入的文档内容会发给这个接口来计算向量。
+          </span>
+        </div>
+
+        <div>
           <div className="mb-1.5 text-text-2">技能与 MCP 服务</div>
           <div className="space-y-2">
             <ExtRow title="用户级" hint="对所有对话生效" set={extensions?.user ?? null} onOpen={() => openConfig(null)} />
@@ -109,17 +141,25 @@ export function SettingsModal({ settings, onSave, onClose, onDocsChanged, extens
           存储信息
         </button>
         <button
-          className="text-[12px] text-danger"
+          className="text-[12px] text-text-3 hover:text-text"
           onClick={() => {
-            if (confirm("会删掉所有文档和索引（会话保留），确定？")) {
-              void api.resetIndex().then(() => {
-                onDocsChanged();
-                setInfo("索引已清空");
-              });
+            if (confirm("会按原文件把所有文档重新解析、重建索引。划线、笔记和阅读进度不受影响。继续？")) {
+              setInfo("正在重建索引…");
+              void api.resetIndex().then(
+                (r) => {
+                  onDocsChanged();
+                  setInfo(
+                    r?.failed.length
+                      ? `重建了 ${r.imported} 份；这些找不到原文件或解析失败，暂时搜不到内容：\n${r.failed.join("\n")}`
+                      : `索引已重建（${r?.imported ?? 0} 份文档）`,
+                  );
+                },
+                (err) => setInfo(String(err)),
+              );
             }
           }}
         >
-          清空索引
+          重建索引
         </button>
         <span className="flex-1" />
         <SecondaryButton size="sm" onClick={onClose}>

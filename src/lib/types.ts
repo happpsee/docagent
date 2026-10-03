@@ -72,6 +72,8 @@ export interface Hit {
   page: number | null;
   text: string;
   distance: number;
+  /** 哪一路找到的：fts 全文 / vec 向量 / both */
+  via?: "fts" | "vec" | "both";
 }
 
 /** 助手消息是一条时间线：文字和工具调用按发生顺序排列 */
@@ -127,6 +129,10 @@ export interface Settings {
   topK: number;
   /** 工作文件夹：助手在这里干活，并加载这里的 .docagent 配置 */
   workspace: string | null;
+  /** 向量接口（OpenAI 兼容的 /embeddings）。可选：不填就只用全文检索 */
+  embedBaseUrl: string;
+  embedApiKey: string;
+  embedModel: string;
 }
 
 /** 一个 .docagent 目录里发现的扩展 */
@@ -146,6 +152,9 @@ export const DEFAULT_SETTINGS: Settings = {
   model: "deepseek-flash",
   topK: 6,
   workspace: null,
+  embedBaseUrl: "https://api.siliconflow.cn/v1",
+  embedApiKey: "",
+  embedModel: "BAAI/bge-m3",
 };
 
 /** sidecar 发来的事件（协议定义见 sidecar/agent.ts 顶部） */

@@ -63,7 +63,17 @@ export async function listDocuments(): Promise<Doc[]> {
 }
 
 export const deleteDocument = (docId: string) => invoke<void>("delete_document", { docId });
-export const resetIndex = () => invoke<void>("reset_index");
+/** 重建索引：按原文件重新解析所有文档（划线、笔记、进度不动） */
+export const resetIndex = () => invoke<{ imported: number; failed: string[] } | null>("reset_index");
+/** 让后台给还没有向量的片段补向量 */
+export const fillVectors = () => invoke<void>("fill_vectors");
+export interface VectorProgress {
+  done: number;
+  total: number;
+  error: string | null;
+}
+export const onVectorProgress = (fn: (p: VectorProgress) => void): Promise<UnlistenFn> =>
+  inTauri ? listen<VectorProgress>("vector-progress", (e) => fn(e.payload)) : Promise.resolve(() => {});
 
 /** 原文件的字节（Rust 走二进制通道返回 ArrayBuffer） */
 export const readFileBytes = (docId: string) => invoke<ArrayBuffer>("read_file_bytes", { docId });
@@ -105,7 +115,10 @@ export const writeTextFile = (path: string, content: string) => invoke<void>("wr
 export const getSetting = (key: string) => invoke<string | null>("get_setting", { key });
 export const setSetting = (key: string, value: string) => invoke<void>("set_setting", { key, value });
 export const dbInfo = () =>
-  invoke<{ docs: number; chunks: number; sessions: number; dbPath: string; dbSizeBytes: number; saveDir: string }>("db_info");
+  invoke<{
+    docs: number; chunks: number; sessions: number; dbPath: string; dbSizeBytes: number; saveDir: string;
+    vectors?: number; embedModel?: string | null;
+  }>("db_info");
 
 // ---------- 会话 ----------
 

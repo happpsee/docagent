@@ -8,15 +8,6 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ChunkIn {
-    pub idx: i64,
-    /// PDF 的页码（从 1 开始）；非分页文档为 null
-    pub page: Option<i64>,
-    pub text: String,
-    pub embedding: Vec<f32>,
-}
-
 #[derive(Debug, Serialize)]
 pub struct DocOut {
     pub id: String,
@@ -41,6 +32,8 @@ pub struct SearchHit {
     pub page: Option<i64>,
     pub text: String,
     pub distance: f64,
+    /// 这条是哪一路找到的：fts（全文）/ vec（向量）/ both
+    pub via: &'static str,
 }
 
 /// sqlite-vec 以静态扩展注册，必须在打开任何连接之前调用一次。
@@ -152,6 +145,20 @@ fn init_schema(conn: &Connection) -> Result<()> {
         );
         "#,
     )?;
+    // 全文索引：存的是 jieba 切好、用空格隔开的词（见 fts.rs），rowid 就是片段 id。
+    // 不存原文（原文在 chunks 里），只存倒排
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks
+         USING fts5(text, content='', contentless_delete=1, tokenize='unicode61');",
+    )?;
+    // 早期版本的向量是本地哈希算的，和现在接口算的不是一回事，直接扔掉
+    let model: Option<String> = get_setting(conn, "embedding_model")?;
+    if model.is_none() {
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS vec_chunks; DELETE FROM meta WHERE key = 'embedding_dim';",
+        )?;
+    }
+    crate::fts::rebuild_if_empty(conn)?;
     // 老库升级：docs 后来才加的列
     let has_author = conn
         .prepare("SELECT 1 FROM pragma_table_info('docs') WHERE name = 'author'")?
@@ -207,51 +214,6 @@ fn vec_json(v: &[f32]) -> String {
     s
 }
 
-pub fn add_document(
-    conn: &mut Connection,
-    title: &str,
-    path: Option<&str>,
-    kind: &str,
-    pages: Option<i64>,
-    chunks: &[ChunkIn],
-) -> Result<String> {
-    if chunks.is_empty() {
-        return Err(anyhow!("没有可索引的内容（文档解析后为空）"));
-    }
-    let dim = chunks[0].embedding.len();
-    if dim == 0 {
-        return Err(anyhow!("embedding 为空"));
-    }
-    if chunks.iter().any(|c| c.embedding.len() != dim) {
-        return Err(anyhow!("同一文档内 embedding 维度不一致"));
-    }
-    ensure_vec_table(conn, dim)?;
-
-    let doc_id = uuid::Uuid::new_v4().to_string();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    let tx = conn.transaction()?;
-    tx.execute(
-        "INSERT INTO docs(id, title, path, kind, pages, created_at) VALUES(?1,?2,?3,?4,?5,?6)",
-        params![doc_id, title, path, kind, pages, now],
-    )?;
-    {
-        let mut ins_chunk =
-            tx.prepare("INSERT INTO chunks(doc_id, idx, page, text) VALUES(?1,?2,?3,?4)")?;
-        let mut ins_vec = tx.prepare("INSERT INTO vec_chunks(rowid, embedding) VALUES(?1, ?2)")?;
-        for c in chunks {
-            ins_chunk.execute(params![doc_id, c.idx, c.page, c.text])?;
-            let rowid = tx.last_insert_rowid();
-            ins_vec.execute(params![rowid, vec_json(&c.embedding)])?;
-        }
-    }
-    tx.commit()?;
-    Ok(doc_id)
-}
-
 pub fn list_documents(conn: &Connection) -> Result<Vec<DocOut>> {
     let mut stmt = conn.prepare(
         "SELECT d.id, d.title, d.path, d.kind, d.pages, d.created_at,
@@ -293,6 +255,10 @@ pub fn delete_document(conn: &mut Connection, doc_id: &str) -> Result<()> {
             }
         }
     }
+    tx.execute(
+        "DELETE FROM fts_chunks WHERE rowid IN (SELECT id FROM chunks WHERE doc_id = ?1)",
+        params![doc_id],
+    )?;
     tx.execute("DELETE FROM docs WHERE id = ?1", params![doc_id])?;
     tx.commit()?;
     Ok(())
@@ -308,7 +274,7 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
 }
 
 /// 向量检索。doc_ids 非空时只在这些文档里找。
-pub fn search(
+pub fn search_vec(
     conn: &Connection,
     embedding: &[f32],
     k: usize,
@@ -336,6 +302,7 @@ pub fn search(
             page: r.get(4)?,
             text: r.get(5)?,
             doc_title: r.get(6)?,
+            via: "vec",
         })
     })?;
     let mut hits: Vec<SearchHit> = rows.collect::<Result<Vec<_>, _>>()?;
@@ -364,15 +331,24 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// 清空索引（换 embedding 模型时用）
-pub fn reset_index(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
+/// 清掉所有片段和两路索引，文档本身（连同划线、笔记、进度）留着，等着重新导入
+pub fn clear_index(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute_batch(
         "DROP TABLE IF EXISTS vec_chunks;
+         DELETE FROM fts_chunks;
          DELETE FROM chunks;
-         DELETE FROM docs;
-         DELETE FROM meta WHERE key = 'embedding_dim';",
+         DELETE FROM meta WHERE key IN ('embedding_dim', 'embedding_model');",
     )?;
+    tx.commit()?;
     Ok(())
+}
+
+/// 所有还找得到原文件路径的文档
+pub fn doc_paths(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT path FROM docs WHERE path IS NOT NULL")?;
+    let rows = stmt.query_map([], |r| r.get(0))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 fn now() -> i64 {
@@ -387,106 +363,6 @@ pub struct TextChunk {
     pub idx: i64,
     pub page: Option<i64>,
     pub text: String,
-}
-
-/// 入库：向量在这里算，前端只送文本。检索时的查询向量也在 Rust 算，保证两边一致。
-pub fn add_document_text(
-    conn: &mut Connection,
-    title: &str,
-    path: Option<&str>,
-    kind: &str,
-    pages: Option<i64>,
-    chunks: &[TextChunk],
-) -> Result<String> {
-    let with_vec: Vec<ChunkIn> = chunks
-        .iter()
-        .map(|c| ChunkIn {
-            idx: c.idx,
-            page: c.page,
-            text: c.text.clone(),
-            embedding: crate::embed::hash_embed(&c.text),
-        })
-        .collect();
-    add_document(conn, title, path, kind, pages, &with_vec)
-}
-
-/// 文本检索：向量和关键词两路合并。
-///
-/// 只靠哈希向量时，「合同」「甲方」这种短查询的相似度天然很低，会被没命中的阈值
-/// 整个滤掉（端到端测试里出现过：文档里明明有，却什么都搜不到）。所以再加一路
-/// 字面匹配：查询按空白拆成词，片段里包含的词越多越靠前。
-pub fn search_text(
-    conn: &Connection,
-    query: &str,
-    k: usize,
-    doc_ids: Option<&[String]>,
-) -> Result<Vec<SearchHit>> {
-    let query = crate::parse::normalize(query);
-    let v = crate::embed::hash_embed(&query);
-    let mut vector = search(conn, &v, k, doc_ids)?;
-    vector.retain(|h| h.distance < crate::embed::NO_MATCH_DISTANCE);
-
-    let mut out = keyword_search(conn, &query, k, doc_ids)?;
-    for h in vector {
-        if !out.iter().any(|x| x.chunk_id == h.chunk_id) {
-            out.push(h);
-        }
-    }
-    out.truncate(k);
-    Ok(out)
-}
-
-/// 字面匹配。命中全部词的排最前；距离字段给一个固定值，表示「字面命中」
-fn keyword_search(
-    conn: &Connection,
-    query: &str,
-    k: usize,
-    doc_ids: Option<&[String]>,
-) -> Result<Vec<SearchHit>> {
-    let terms: Vec<String> = query
-        .split_whitespace()
-        .map(|t| {
-            t.trim_matches(|c: char| !c.is_alphanumeric())
-                .to_lowercase()
-        })
-        .filter(|t| t.chars().count() >= 2)
-        .take(6)
-        .collect();
-    if terms.is_empty() {
-        return Ok(vec![]);
-    }
-    let mut stmt = conn.prepare(
-        "SELECT c.id, c.doc_id, c.idx, c.page, c.text, d.title
-         FROM chunks c JOIN docs d ON d.id = c.doc_id",
-    )?;
-    let rows = stmt.query_map([], |r| {
-        Ok(SearchHit {
-            chunk_id: r.get(0)?,
-            doc_id: r.get(1)?,
-            idx: r.get(2)?,
-            page: r.get(3)?,
-            text: r.get(4)?,
-            doc_title: r.get(5)?,
-            distance: 1.0,
-        })
-    })?;
-    let mut scored: Vec<(usize, SearchHit)> = Vec::new();
-    for row in rows {
-        let hit = row?;
-        if let Some(ids) = doc_ids {
-            if !ids.is_empty() && !ids.iter().any(|i| i == &hit.doc_id) {
-                continue;
-            }
-        }
-        let lower = hit.text.to_lowercase();
-        let matched = terms.iter().filter(|t| lower.contains(t.as_str())).count();
-        if matched > 0 {
-            scored.push((matched, hit));
-        }
-    }
-    // 命中词多的在前；同分按文档里的顺序
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.chunk_id.cmp(&b.1.chunk_id)));
-    Ok(scored.into_iter().take(k).map(|(_, h)| h).collect())
 }
 
 /// 同一路径重复导入时，先把旧的那份删掉（文件改过后重新导入就是更新）
@@ -516,6 +392,7 @@ pub fn doc_path(conn: &Connection, doc_id: &str) -> Result<Option<String>> {
 /// 导入一份文档。同一路径再次导入时沿用原来的 id、只换内容——
 /// 这样重新导入（文件改过了）不会把这份文档上的高亮、笔记和阅读进度弄丢。
 /// chunks 可以为空（漫画、扫描件）：能读，只是搜不到。
+/// 这里只建全文索引；向量要调接口，由后台任务补（见 search.rs）。
 pub struct NewDoc<'a> {
     pub title: &'a str,
     pub path: &'a str,
@@ -530,9 +407,11 @@ pub fn import_document(
     doc: &NewDoc,
     chunks: &[TextChunk],
 ) -> Result<String> {
-    if !chunks.is_empty() {
-        ensure_vec_table(conn, crate::embed::DIM)?;
-    }
+    // 分词是 CPU 活，在开事务之前做完
+    let words: Vec<String> = chunks
+        .iter()
+        .map(|c| crate::fts::segment(&c.text))
+        .collect();
     let existing: Option<String> = conn
         .query_row(
             "SELECT id FROM docs WHERE path = ?1",
@@ -550,6 +429,10 @@ pub fn import_document(
                     params![id],
                 )?;
             }
+            tx.execute(
+                "DELETE FROM fts_chunks WHERE rowid IN (SELECT id FROM chunks WHERE doc_id = ?1)",
+                params![id],
+            )?;
             tx.execute("DELETE FROM chunks WHERE doc_id = ?1", params![id])?;
             tx.execute(
                 "UPDATE docs SET title = ?2, kind = ?3, pages = ?4, author = ?5 WHERE id = ?1",
@@ -569,13 +452,10 @@ pub fn import_document(
     {
         let mut ins_chunk =
             tx.prepare("INSERT INTO chunks(doc_id, idx, page, text) VALUES(?1,?2,?3,?4)")?;
-        for c in chunks {
+        let mut ins_fts = tx.prepare("INSERT INTO fts_chunks(rowid, text) VALUES(?1, ?2)")?;
+        for (c, w) in chunks.iter().zip(&words) {
             ins_chunk.execute(params![doc_id, c.idx, c.page, c.text])?;
-            let rowid = tx.last_insert_rowid();
-            tx.execute(
-                "INSERT INTO vec_chunks(rowid, embedding) VALUES(?1, ?2)",
-                params![rowid, vec_json(&crate::embed::hash_embed(&c.text))],
-            )?;
+            ins_fts.execute(params![tx.last_insert_rowid(), w])?;
         }
     }
     if let Some(data) = doc.cover {
@@ -586,6 +466,77 @@ pub fn import_document(
     }
     tx.commit()?;
     Ok(doc_id)
+}
+
+// ---------- 向量 ----------
+
+/// 向量表只能装一种模型、一种维度的向量。模型换了就整表重来
+pub fn prepare_vectors(conn: &Connection, model: &str, dim: usize) -> Result<()> {
+    let stored = get_setting(conn, "embedding_model")?;
+    let stored_dim = get_setting(conn, "embedding_dim")?;
+    if stored.as_deref() != Some(model) || stored_dim != Some(dim.to_string()) {
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS vec_chunks; DELETE FROM meta WHERE key = 'embedding_dim';",
+        )?;
+        set_setting(conn, "embedding_model", model)?;
+    }
+    ensure_vec_table(conn, dim)
+}
+
+/// 当前向量表是不是这个模型算的
+pub fn vectors_ready(conn: &Connection, model: &str) -> Result<bool> {
+    Ok(
+        get_setting(conn, "embedding_model")?.as_deref() == Some(model)
+            && table_exists(conn, "vec_chunks")?,
+    )
+}
+
+/// 还没有向量的片段（最多 limit 条）
+pub fn missing_vectors(conn: &Connection, model: &str, limit: usize) -> Result<Vec<(i64, String)>> {
+    let sql = if vectors_ready(conn, model)? {
+        "SELECT id, text FROM chunks WHERE id NOT IN (SELECT rowid FROM vec_chunks) ORDER BY id LIMIT ?1"
+    } else {
+        "SELECT id, text FROM chunks ORDER BY id LIMIT ?1"
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params![limit as i64], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+pub fn insert_vectors(conn: &mut Connection, model: &str, rows: &[(i64, Vec<f32>)]) -> Result<()> {
+    let Some((_, first)) = rows.first() else {
+        return Ok(());
+    };
+    prepare_vectors(conn, model, first.len())?;
+    let tx = conn.transaction()?;
+    {
+        // 片段可能在算向量的这段时间里被删了（文档被删或重新导入），只写还在的
+        let mut alive = tx.prepare("SELECT 1 FROM chunks WHERE id = ?1")?;
+        let mut ins =
+            tx.prepare("INSERT OR REPLACE INTO vec_chunks(rowid, embedding) VALUES(?1, ?2)")?;
+        for (id, v) in rows {
+            if alive.exists(params![id])? {
+                ins.execute(params![id, vec_json(v)])?;
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// (已有向量的片段数, 片段总数)
+pub fn vector_counts(conn: &Connection) -> Result<(i64, i64)> {
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
+    let have: i64 = if table_exists(conn, "vec_chunks")? {
+        conn.query_row(
+            "SELECT COUNT(*) FROM vec_chunks WHERE rowid IN (SELECT id FROM chunks)",
+            [],
+            |r| r.get(0),
+        )?
+    } else {
+        0
+    };
+    Ok((have, total))
 }
 
 pub fn set_cover(conn: &Connection, doc_id: &str, data: &[u8]) -> Result<()> {
@@ -821,77 +772,6 @@ pub fn get_messages(conn: &Connection, session_id: &str) -> Result<Vec<MessageOu
 mod tests {
     use super::*;
 
-    fn chunk(idx: i64, text: &str, emb: Vec<f32>) -> ChunkIn {
-        ChunkIn {
-            idx,
-            page: Some(idx + 1),
-            text: text.to_string(),
-            embedding: emb,
-        }
-    }
-
-    #[test]
-    fn 建库_写入_检索_删除() {
-        let mut conn = open_in_memory().unwrap();
-        let id = add_document(
-            &mut conn,
-            "测试文档",
-            Some("/tmp/a.md"),
-            "md",
-            Some(3),
-            &[
-                chunk(0, "猫在睡觉", vec![1.0, 0.0, 0.0]),
-                chunk(1, "狗在跑", vec![0.0, 1.0, 0.0]),
-                chunk(2, "天气很好", vec![0.0, 0.0, 1.0]),
-            ],
-        )
-        .unwrap();
-
-        let docs = list_documents(&conn).unwrap();
-        assert_eq!(docs.len(), 1);
-        assert_eq!(docs[0].chunk_count, 3);
-        assert_eq!(docs[0].title, "测试文档");
-
-        // 最接近 [1,0,0] 的应该是第一块
-        let hits = search(&conn, &[0.9, 0.1, 0.0], 2, None).unwrap();
-        assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].text, "猫在睡觉");
-        assert_eq!(hits[0].page, Some(1));
-        assert!(hits[0].distance < hits[1].distance);
-
-        // 按文档过滤
-        let hits = search(&conn, &[0.9, 0.1, 0.0], 2, Some(&["别的文档".to_string()])).unwrap();
-        assert!(hits.is_empty());
-
-        delete_document(&mut conn, &id).unwrap();
-        assert!(list_documents(&conn).unwrap().is_empty());
-        assert!(search(&conn, &[1.0, 0.0, 0.0], 3, None).unwrap().is_empty());
-    }
-
-    #[test]
-    fn 维度不一致要报错() {
-        let mut conn = open_in_memory().unwrap();
-        add_document(
-            &mut conn,
-            "a",
-            None,
-            "txt",
-            None,
-            &[chunk(0, "x", vec![1.0, 0.0])],
-        )
-        .unwrap();
-        let err = add_document(
-            &mut conn,
-            "b",
-            None,
-            "txt",
-            None,
-            &[chunk(0, "y", vec![1.0, 0.0, 0.0])],
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("维度"));
-    }
-
     #[test]
     fn 设置读写() {
         let conn = open_in_memory().unwrap();
@@ -901,82 +781,6 @@ mod tests {
             get_setting(&conn, "provider").unwrap().unwrap(),
             "{\"base\":\"x\"}"
         );
-    }
-
-    #[test]
-    fn 文本入库后能按内容检索_无关问题不命中() {
-        let mut conn = open_in_memory().unwrap();
-        add_document_text(
-            &mut conn,
-            "采购合同",
-            None,
-            "md",
-            None,
-            &[
-                TextChunk {
-                    idx: 0,
-                    page: None,
-                    text: "第三条 付款条款：合同签订后 5 个工作日内支付 30% 预付款。".into(),
-                },
-                TextChunk {
-                    idx: 1,
-                    page: None,
-                    text: "第四条 质保：质保期为验收合格之日起 24 个月，期内免费维修。".into(),
-                },
-            ],
-        )
-        .unwrap();
-
-        let hits = search_text(&conn, "质保期多久", 3, None).unwrap();
-        assert!(!hits.is_empty());
-        assert!(hits[0].text.contains("质保期"));
-
-        // 完全无关的问题应被距离阈值滤掉
-        let hits = search_text(&conn, "推荐一首适合跑步听的歌", 3, None).unwrap();
-        assert!(hits.is_empty(), "无关问题不该有命中: {hits:?}");
-    }
-
-    #[test]
-    fn 短关键词也能搜到_多词时命中多的靠前() {
-        let mut conn = open_in_memory().unwrap();
-        add_document_text(
-            &mut conn,
-            "采购合同",
-            None,
-            "md",
-            None,
-            &[
-                TextChunk {
-                    idx: 0,
-                    page: None,
-                    text: "甲方向乙方采购工业摄像机 20 台，总价 172000 元。".into(),
-                },
-                TextChunk {
-                    idx: 1,
-                    page: None,
-                    text: "运输费用由乙方承担，保险由甲方自行办理。".into(),
-                },
-                TextChunk {
-                    idx: 2,
-                    page: None,
-                    text: "质保期为验收合格之日起 24 个月。".into(),
-                },
-            ],
-        )
-        .unwrap();
-
-        // 两个字的查询，哈希向量的相似度过不了阈值，要靠字面匹配
-        let hits = search_text(&conn, "甲方", 5, None).unwrap();
-        assert_eq!(hits.len(), 2, "应找到两个含「甲方」的片段");
-
-        // 两个词都命中的排在只命中一个的前面
-        let hits = search_text(&conn, "甲方 保险", 5, None).unwrap();
-        assert!(hits[0].text.contains("保险"));
-
-        // 字面上完全不沾边的仍然搜不到
-        assert!(search_text(&conn, "推荐一首适合跑步听的歌", 5, None)
-            .unwrap()
-            .is_empty());
     }
 
     #[test]
@@ -1044,8 +848,9 @@ mod tests {
         // 同一路径再导入：id 不变，内容换新，笔记和进度都在
         let again = import_document(&mut conn, &doc, &[chunk("换了内容的正文")]).unwrap();
         assert_eq!(again, id);
-        assert_eq!(search_text(&conn, "换了内容", 3, None).unwrap().len(), 1);
-        assert!(search_text(&conn, "傍晚开始", 3, None).unwrap().is_empty());
+        let found = |q: &str| crate::fts::search(&conn, q, 3, None).unwrap().len();
+        assert_eq!(found("换了内容"), 1);
+        assert_eq!(found("傍晚开始"), 0);
         let notes = list_annotations(&conn, None).unwrap();
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].note, "改过的");

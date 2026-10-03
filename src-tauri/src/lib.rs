@@ -13,9 +13,11 @@ pub mod commands;
 pub mod db;
 pub mod ebook;
 pub mod embed;
+pub mod fts;
 pub mod markup;
 pub mod parse;
 pub mod render;
+pub mod search;
 pub mod server;
 
 use std::path::PathBuf;
@@ -57,6 +59,8 @@ pub fn run() {
                 api_token: api.token,
                 agent: Mutex::new(None),
             });
+            // 上次没算完的向量（或者刚配了接口）接着算
+            commands::spawn_fill_vectors(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -65,6 +69,7 @@ pub fn run() {
             commands::list_documents,
             commands::delete_document,
             commands::reset_index,
+            commands::fill_vectors,
             commands::read_file_bytes,
             commands::document_book,
             commands::doc_cover,

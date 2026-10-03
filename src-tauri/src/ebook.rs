@@ -29,9 +29,11 @@ fn resolve(base_dir: &str, href: &str) -> String {
     let raw = href.as_bytes();
     let mut i = 0;
     while i < raw.len() {
+        // 在字节上解析：% 后面可能跟着多字节的中文，按字符串切会切在字符中间
         if raw[i] == b'%' && i + 2 < raw.len() {
-            if let Ok(v) = u8::from_str_radix(&href[i + 1..i + 3], 16) {
-                bytes.push(v);
+            let hex = |b: u8| (b as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hex(raw[i + 1]), hex(raw[i + 2])) {
+                bytes.push((hi * 16 + lo) as u8);
                 i += 3;
                 continue;
             }
@@ -311,6 +313,7 @@ mod tests {
             "OEBPS/img/c v.jpg"
         );
         assert_eq!(resolve("", "a/b.html"), "a/b.html");
+        assert_eq!(resolve("", "100%完成.xhtml"), "100%完成.xhtml");
     }
 
     #[test]
