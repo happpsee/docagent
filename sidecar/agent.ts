@@ -15,8 +15,8 @@
  *   → {type:"ready"}
  *   → {type:"session", id, sessionId}
  *   → {type:"delta", id, text}
- *   → {type:"tool", id, name, input}
- *   → {type:"tool_result", id, summary}
+ *   → {type:"tool", id, toolUseId, name, input}
+ *   → {type:"tool_result", id, toolUseId, text, isError}
  *   → {type:"approval_request", id, requestId, name, input}
  *   → {type:"result", id, text, sessionId, costUsd, turns, hits}
  *   → {type:"error", id?, message}
@@ -159,13 +159,16 @@ const docTools = createSdkMcpServer({
   ],
 });
 
-const SYSTEM = `你是本地文档问答助手。只能依据 search_docs 返回的资料回答。
+const SYSTEM = `你是一个知识助手。用户导入了一批本地文档，你可以用 search_docs 检索它们。
 
-规则：
-1. 回答前先调用 search_docs 检索。结果不够就换个说法再检索，一个问题最多检索 3 次。
-2. 只用检索到的内容回答。资料里没有的，直接说"资料里没有找到相关内容"，不要用常识补充，不要猜。
-3. 每个结论后标注来源编号 [1]、[2]，编号对应检索结果里的序号。没找到内容时不要标编号。
-4. 中文回答，先结论后依据，简洁。`;
+知识来源有两种，文档的优先级更高：
+1. 问题可能和用户的资料有关时，先检索。文档内容和你的常识冲突时，以文档为准。
+2. 文档没覆盖的部分，可以用你自己的知识补充，但必须分清来源：
+   - 来自文档的结论，句末标注编号 [1]、[2]（对应检索结果里的编号）
+   - 来自你自身知识的内容不标编号，并明确说明这部分不是出自用户的文档
+3. 闲聊、通用知识、写作、推理这类不依赖用户资料的请求，直接回答，不必检索。
+4. 不要把自身知识说成是文档里的，不要编造引用。文档里查不到的具体事实（数字、条款、人名），如实说文档里没有。
+5. 一个问题最多检索 3 次。用中文回答，表达清晰，适当使用 Markdown。`;
 
 async function handleAsk(msg: {
   id: string;
@@ -221,7 +224,9 @@ async function handleAsk(msg: {
         }
       } else if (m.type === "assistant") {
         for (const b of m.message?.content ?? []) {
-          if (b.type === "tool_use") send({ type: "tool", id, name: b.name, input: b.input });
+          if (b.type === "tool_use") {
+            send({ type: "tool", id, toolUseId: b.id, name: b.name, input: b.input });
+          }
         }
       } else if (m.type === "user") {
         for (const b of m.message?.content ?? []) {
@@ -229,7 +234,13 @@ async function handleAsk(msg: {
             const text = Array.isArray(b.content)
               ? b.content.map((c: any) => c.text ?? "").join("")
               : String(b.content ?? "");
-            send({ type: "tool_result", id, summary: text.slice(0, 160) });
+            send({
+              type: "tool_result",
+              id,
+              toolUseId: b.tool_use_id,
+              text: text.slice(0, 4000),
+              isError: !!b.is_error,
+            });
           }
         }
       } else if (m.type === "result" && m.subtype !== "success") {

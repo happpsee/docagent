@@ -1,7 +1,7 @@
 /** Rust 命令的封装。前端只通过这里碰 Rust。 */
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, Doc, DocKind, Hit, Message, Session, ToolCall } from "./types";
+import type { AgentEvent, Block, Doc, DocKind, Hit, Message, Session } from "./types";
 
 export async function addDocument(
   title: string,
@@ -50,9 +50,10 @@ export const upsertSession = (id: string, title: string, sdkSessionId: string | 
 export const deleteSession = (id: string) => invoke<void>("delete_session", { id });
 
 interface MessageMeta {
+  blocks?: Block[];
   hits?: Hit[];
-  tools?: ToolCall[];
   costUsd?: number | null;
+  durationMs?: number;
   error?: boolean;
 }
 
@@ -61,7 +62,13 @@ export const addMessage = (sessionId: string, m: Message) =>
     sessionId,
     role: m.role,
     content: m.content,
-    meta: JSON.stringify({ hits: m.hits, tools: m.tools, costUsd: m.costUsd, error: m.error } satisfies MessageMeta),
+    meta: JSON.stringify({
+      blocks: m.blocks,
+      hits: m.hits,
+      costUsd: m.costUsd,
+      durationMs: m.durationMs,
+      error: m.error,
+    } satisfies MessageMeta),
   });
 
 export async function getMessages(sessionId: string): Promise<Message[]> {

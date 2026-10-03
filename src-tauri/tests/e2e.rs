@@ -98,7 +98,7 @@ fn ask(
                 writeln!(stdin, "{reply}").unwrap();
             }
             "tool_result" => {
-                if v["summary"].as_str().unwrap_or("").contains("已保存到") {
+                if v["text"].as_str().unwrap_or("").contains("已保存到") {
                     run.saved = true;
                 }
             }
@@ -190,6 +190,30 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
         r3.answer.contains("没有"),
         "应明确说资料里没有：{}",
         r3.answer
+    );
+
+    // 4b. 文档没讲的通用知识：可以用自身知识回答，但要说明不是出自文档，且不能挂引用
+    println!("[问] 贸易术语 FOB 是什么意思？");
+    let r3b = ask(
+        &root,
+        &api,
+        &config_dir,
+        "贸易术语 FOB 是什么意思？",
+        None,
+        false,
+    );
+    println!("[答] {}\n", r3b.answer);
+    assert!(
+        r3b.answer.contains("船")
+            || r3b.answer.contains("离岸")
+            || r3b.answer.contains("Free On Board"),
+        "应能用自身知识解释 FOB：{}",
+        r3b.answer
+    );
+    assert!(
+        r3b.answer.contains("文档"),
+        "应说明这部分不是出自用户文档：{}",
+        r3b.answer
     );
 
     // 5. 保存文件：必须先过审批；拒绝后不应落盘

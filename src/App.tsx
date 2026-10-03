@@ -1,16 +1,13 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { Settings as SettingsIcon, ShieldCheck } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
 import { Viewer } from "./components/Viewer";
-import { GlassModal } from "./components/ui/GlassModal";
-import { PrimaryButton } from "./components/ui/PrimaryButton";
-import { SecondaryButton } from "./components/ui/SecondaryButton";
 import * as api from "./lib/api";
 import {
   DEFAULT_SETTINGS,
   type AgentEvent,
+  type Block,
   type Doc,
   type Hit,
   type Message,
@@ -21,12 +18,6 @@ import {
 const SETTINGS_KEY = "settings";
 type AgentState = "unconfigured" | "starting" | "ready" | "down";
 
-interface Approval {
-  requestId: string;
-  name: string;
-  input: Record<string, unknown>;
-}
-
 export function App() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [agent, setAgent] = useState<AgentState>("unconfigured");
@@ -35,16 +26,14 @@ export function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [current, setCurrent] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cite, setCite] = useState<Hit | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [approval, setApproval] = useState<Approval | null>(null);
-  const approvalTitle = useId();
 
   // 事件回调里要读最新值，用 ref 避免闭包拿到旧状态
-  const askRef = useRef<{ id: string; session: Session } | null>(null);
+  const askRef = useRef<{ id: string; session: Session; startedAt: number } | null>(null);
   const messagesRef = useRef<Message[]>([]);
   messagesRef.current = messages;
 
@@ -75,15 +64,25 @@ export function App() {
     });
   }, []);
 
+  /** 改助手消息里的块时间线 */
+  const patchBlocks = useCallback(
+    (fn: (blocks: Block[]) => Block[]) => patchLast((m) => ({ ...m, blocks: fn(m.blocks ?? []) })),
+    [patchLast],
+  );
+
   const finish = useCallback(
-    (patch: Partial<Message>) => {
+    (patch: (m: Message) => Partial<Message>) => {
       const ask = askRef.current;
       askRef.current = null;
       setBusy(false);
-      setStatus(null);
       const last = messagesRef.current[messagesRef.current.length - 1];
       if (!ask || last?.role !== "assistant") return;
-      const done: Message = { ...last, ...patch, pending: false };
+      const done: Message = {
+        ...last,
+        ...patch(last),
+        pending: false,
+        durationMs: Date.now() - ask.startedAt,
+      };
       patchLast(() => done);
       void api.addMessage(ask.session.id, done).then(refreshSessions);
     },
@@ -108,35 +107,62 @@ export function App() {
           break;
         }
         case "delta":
-          setStatus(null);
-          patchLast((m) => ({ ...m, content: m.content + e.text }));
+          // 接在最后一个文字块后面；上一块是工具调用就另起一块，保持时间线顺序
+          patchBlocks((bs) => {
+            const last = bs[bs.length - 1];
+            if (last?.type === "text") return [...bs.slice(0, -1), { ...last, text: last.text + e.text }];
+            return [...bs, { type: "text", text: e.text }];
+          });
           break;
         case "tool":
-          if (e.name.endsWith("search_docs")) setStatus(`检索：${String(e.input.query ?? "")}`);
-          patchLast((m) => ({ ...m, tools: [...(m.tools ?? []), { name: e.name, input: e.input }] }));
+          patchBlocks((bs) => [...bs, { type: "tool", toolUseId: e.toolUseId, name: e.name, input: e.input }]);
           break;
         case "tool_result":
-          patchLast((m) => {
-            const tools = [...(m.tools ?? [])];
-            const i = tools.length - 1;
-            if (i >= 0) tools[i] = { ...tools[i], summary: e.summary };
-            return { ...m, tools };
-          });
-          setStatus("整理回答…");
+          patchBlocks((bs) =>
+            bs.map((b) =>
+              b.type === "tool" && b.toolUseId === e.toolUseId ? { ...b, result: e.text, isError: e.isError } : b,
+            ),
+          );
           break;
         case "approval_request":
-          setApproval({ requestId: e.requestId, name: e.name, input: e.input });
+          // 挂到对应的那次工具调用上（最近一个同名且还没结果的）
+          patchBlocks((bs) => {
+            const i = bs.findLastIndex((b) => b.type === "tool" && b.name.endsWith(e.name) && b.result == null);
+            if (i < 0) {
+              return [
+                ...bs,
+                { type: "tool", toolUseId: e.requestId, name: `mcp__docagent__${e.name}`, input: e.input, approval: { requestId: e.requestId, state: "pending" } },
+              ];
+            }
+            const next = [...bs];
+            next[i] = { ...(next[i] as Extract<Block, { type: "tool" }>), approval: { requestId: e.requestId, state: "pending" } };
+            return next;
+          });
           break;
         case "result":
-          finish({ content: e.text || messagesRef.current.at(-1)?.content || "", hits: e.hits, costUsd: e.costUsd });
+          finish((m) => {
+            const hasText = m.blocks?.some((b) => b.type === "text" && b.text.trim());
+            return {
+              content: e.text,
+              // 供应商没给流式片段时，最终文本补成一个块
+              blocks: hasText ? m.blocks : [...(m.blocks ?? []), { type: "text", text: e.text }],
+              hits: e.hits,
+              costUsd: e.costUsd,
+            };
+          });
           break;
         case "error":
-          // 已经拿到正文的情况下（result 之后的收尾报错）不覆盖回答
-          if (askRef.current) finish({ content: `出错了：${e.message}`, error: true });
+          if (askRef.current) {
+            finish((m) => ({
+              error: !m.blocks?.length,
+              content: m.content || e.message,
+              blocks: [...(m.blocks ?? []), { type: "text", text: `出错了：${e.message}` }],
+            }));
+          }
           break;
       }
     },
-    [finish, patchLast],
+    [finish, patchBlocks],
   );
 
   useEffect(() => {
@@ -192,11 +218,12 @@ export function App() {
       }
       const user: Message = { role: "user", content: question };
       await api.addMessage(session.id, user);
-      setMessages((m) => [...m, user, { role: "assistant", content: "", pending: true }]);
+      setMessages((m) => [...m, user, { role: "assistant", content: "", blocks: [], pending: true }]);
       const id = crypto.randomUUID();
-      askRef.current = { id, session };
+      const t0 = Date.now();
+      askRef.current = { id, session, startedAt: t0 };
+      setStartedAt(t0);
       setBusy(true);
-      setStatus("思考中…");
       await api.agentSend({
         type: "ask",
         id,
@@ -208,7 +235,6 @@ export function App() {
       refreshSessions();
     } catch (err) {
       setBusy(false);
-      setStatus(null);
       setError(String(err));
     }
   }
@@ -217,7 +243,10 @@ export function App() {
     const ask = askRef.current;
     if (!ask) return;
     void api.agentSend({ type: "abort", id: ask.id });
-    finish({ content: `${messagesRef.current.at(-1)?.content ?? ""}\n\n（已停止）` });
+    finish((m) => ({
+      content: m.blocks?.map((b) => (b.type === "text" ? b.text : "")).join("") ?? "",
+      blocks: [...(m.blocks ?? []), { type: "text", text: "*（已停止）*" }],
+    }));
   }
 
   function newChat() {
@@ -244,38 +273,26 @@ export function App() {
     refreshSessions();
   }
 
-  function answerApproval(allow: boolean) {
-    if (!approval) return;
-    void api.agentSend({ type: "approval", requestId: approval.requestId, allow });
-    setApproval(null);
+  function answerApproval(requestId: string, allow: boolean) {
+    void api.agentSend({ type: "approval", requestId, allow });
+    patchBlocks((bs) =>
+      bs.map((b) =>
+        b.type === "tool" && b.approval?.requestId === requestId
+          ? { ...b, approval: { requestId, state: allow ? "allowed" : "denied" } }
+          : b,
+      ),
+    );
   }
 
-  const badge = {
-    unconfigured: { text: "未配置模型", cls: "text-warm border-warm-ring" },
-    starting: { text: "连接中…", cls: "text-text-3 border-hairline" },
-    ready: { text: settings.model, cls: "text-good border-hairline" },
-    down: { text: "助手已断开", cls: "text-danger border-danger-ring" },
+  const status = {
+    unconfigured: { text: "未配置模型 · 点击设置", tone: "warn" as const },
+    starting: { text: "连接中…", tone: "idle" as const },
+    ready: { text: settings.model, tone: "ok" as const },
+    down: { text: "助手已断开 · 点击重连", tone: "bad" as const },
   }[agent];
 
   return (
     <div className="flex h-screen flex-col">
-      <nav className="flex items-center gap-3 border-b border-hairline px-4 py-2.5" data-tauri-drag-region>
-        <span className="text-[14px] font-semibold tracking-tight text-text">DocAgent</span>
-        <span className={`num rounded-full border px-2 py-0.5 text-[11px] ${badge.cls}`}>{badge.text}</span>
-        <span className="flex-1" />
-        <span className="hidden items-center gap-1 text-[11px] text-text-4 md:flex" title="文档解析、索引、检索都在本机完成；只有提问时会把问题和命中的片段发给模型接口">
-          <ShieldCheck className="h-3.5 w-3.5" />
-          文档与索引只存在本机
-        </span>
-        <button
-          aria-label="设置"
-          className="arc-close-btn grid h-7 w-7 place-items-center rounded-md"
-          onClick={() => setShowSettings(true)}
-        >
-          <SettingsIcon className="h-4 w-4" />
-        </button>
-      </nav>
-
       {error && (
         <button
           className="border-b border-danger-ring bg-danger-soft px-4 py-2 text-left text-[12px] text-danger"
@@ -291,6 +308,7 @@ export function App() {
           currentId={current?.id ?? null}
           docs={docs}
           selected={selected}
+          status={status}
           onNewChat={newChat}
           onOpenSession={(s) => void openSession(s)}
           onDeleteSession={(s) => void removeSession(s)}
@@ -303,17 +321,22 @@ export function App() {
             })
           }
           onDocsChanged={refreshDocs}
+          onOpenSettings={() => setShowSettings(true)}
           onError={setError}
         />
         <ChatPanel
+          title={current?.title ?? null}
           messages={messages}
-          status={status}
           busy={busy}
+          startedAt={startedAt}
           ready={agent === "ready"}
-          hasDocs={docs.length > 0}
+          model={settings.model}
+          docCount={docs.length}
+          scopeCount={selected.size}
           onSend={(q) => void send(q)}
           onStop={stop}
           onCite={setCite}
+          onApproval={answerApproval}
         />
         {cite && (
           <Viewer
@@ -331,37 +354,6 @@ export function App() {
           onClose={() => setShowSettings(false)}
           onDocsChanged={refreshDocs}
         />
-      )}
-
-      {approval && (
-        <GlassModal
-          open
-          onClose={() => answerApproval(false)}
-          labelledBy={approvalTitle}
-          hairlineTone="warm"
-          closeOnBackdrop={false}
-        >
-          <div className="px-5 pt-5">
-            <h2 id={approvalTitle} className="text-[15px] font-semibold text-text">
-              助手想保存一个文件
-            </h2>
-            <p className="mt-1 text-[12px] text-text-3">文件会写到「文稿/DocAgent」目录下。</p>
-            <div className="mt-3 rounded-md bg-bg p-3 text-[12px]">
-              <div className="num text-text">{String(approval.input.filename ?? "")}</div>
-              <pre className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap text-text-3">
-                {String(approval.input.content ?? "").slice(0, 1200)}
-              </pre>
-            </div>
-          </div>
-          <div className="flex justify-end gap-2 px-5 py-4">
-            <SecondaryButton size="sm" onClick={() => answerApproval(false)}>
-              拒绝
-            </SecondaryButton>
-            <PrimaryButton size="sm" tone="warm" onClick={() => answerApproval(true)}>
-              同意保存
-            </PrimaryButton>
-          </div>
-        </GlassModal>
       )}
     </div>
   );

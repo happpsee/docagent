@@ -1,59 +1,75 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Check, Search, Square, X } from "lucide-react";
+import { ArrowUp, ChevronRight, FileText, Loader2, Square } from "lucide-react";
 import { citedNumbers } from "@/lib/citations";
-import type { Hit, Message } from "@/lib/types";
+import type { Block, Hit, Message } from "@/lib/types";
 import { StreamMarkdown } from "./StreamMarkdown";
 import { AutoTextarea } from "./ui/AutoTextarea";
 
 interface Props {
+  title: string | null;
   messages: Message[];
-  status: string | null;
   busy: boolean;
+  /** 本轮开始的时间戳，用来显示已用时 */
+  startedAt: number | null;
   ready: boolean;
-  hasDocs: boolean;
+  model: string;
+  docCount: number;
+  scopeCount: number;
   onSend: (q: string) => void;
   onStop: () => void;
   onCite: (hit: Hit) => void;
+  onApproval: (requestId: string, allow: boolean) => void;
 }
 
-const SUGGESTIONS = ["这份资料主要讲了什么？", "列出里面所有的金额和期限", "有哪些需要注意的风险条款？"];
+const SUGGESTIONS = ["这些资料主要讲了什么？", "列出里面所有的金额和期限", "有哪些需要注意的风险点？"];
 
-export function ChatPanel({ messages, status, busy, ready, hasDocs, onSend, onStop, onCite }: Props) {
+export function ChatPanel(p: Props) {
   const [input, setInput] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, status]);
+  }, [p.messages]);
 
   function submit(text = input) {
     const q = text.trim();
-    if (!q || busy || !ready) return;
+    if (!q || p.busy || !p.ready) return;
     setInput("");
-    onSend(q);
+    p.onSend(q);
   }
+
+  const empty = p.messages.length === 0;
 
   return (
     <section className="flex min-w-0 flex-1 flex-col">
+      {p.title && (
+        <header className="truncate border-b border-hairline-soft px-6 py-2.5 text-[13px] text-text-2">
+          {p.title}
+        </header>
+      )}
+
       <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-3xl flex-col gap-6 px-6 py-8">
-          {!messages.length && (
-            <div className="mt-[12vh] text-center">
-              <h1 className="display-serif text-2xl font-semibold text-text">问问你的文档</h1>
-              <p className="mt-2 text-[13px] text-text-3">
-                {hasDocs
-                  ? "回答只依据你导入的资料，每个结论都能点回原文。"
-                  : "先点左上角「导入」添加资料，再来提问。"}
+        <div className="mx-auto flex max-w-[760px] flex-col gap-5 px-6 py-7">
+          {empty && (
+            <div className="mt-[16vh]">
+              <h1 className="display-serif text-[26px] font-semibold tracking-tight text-text">
+                有什么想了解的？
+              </h1>
+              <p className="mt-2 text-[13px] leading-6 text-text-3">
+                {p.docCount
+                  ? "会优先从你的文档里找答案，并标出出处；文档没讲到的，我用自己的知识补充并说明。"
+                  : "可以直接聊。导入文档后，我会优先从你的资料里找答案并标出出处。"}
               </p>
-              {hasDocs && (
-                <div className="mt-6 flex flex-wrap justify-center gap-2">
+              {p.docCount > 0 && (
+                <div className="mt-5 flex flex-col items-start gap-1.5">
                   {SUGGESTIONS.map((s) => (
                     <button
                       key={s}
-                      className="arc-btn-secondary rounded-full px-3.5 py-1.5 text-[12px]"
+                      className="rounded-lg px-2.5 py-1.5 text-left text-[13px] text-text-2 hover:bg-nav-card hover:text-text"
                       onClick={() => submit(s)}
-                      disabled={!ready}
+                      disabled={!p.ready}
                     >
+                      <span className="mr-2 text-text-4">→</span>
                       {s}
                     </button>
                   ))}
@@ -62,25 +78,29 @@ export function ChatPanel({ messages, status, busy, ready, hasDocs, onSend, onSt
             </div>
           )}
 
-          {messages.map((m, i) =>
+          {p.messages.map((m, i) =>
             m.role === "user" ? (
               <div key={i} className="flex justify-end">
-                <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-accent px-4 py-2.5 text-[14px] leading-6 text-white">
+                <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-nav-card-active px-4 py-2.5 text-[14px] leading-6 text-text">
                   {m.content}
                 </div>
               </div>
             ) : (
-              <Answer key={i} m={m} onCite={onCite} />
+              <Assistant
+                key={i}
+                m={m}
+                startedAt={m.pending ? p.startedAt : null}
+                onCite={p.onCite}
+                onApproval={p.onApproval}
+              />
             ),
           )}
-
-          {status && <div className="arc-shimmer-text text-[13px]">{status}</div>}
-          <div ref={endRef} />
+          <div ref={endRef} className="h-2" />
         </div>
       </div>
 
-      <div className="mx-auto w-full max-w-3xl px-6 pb-5">
-        <div className="arc-glass-panel flex items-end gap-2 rounded-2xl p-2.5">
+      <div className="mx-auto w-full max-w-[760px] px-6 pb-4">
+        <div className="rounded-2xl border border-hairline-strong bg-surface-2 shadow-sm focus-within:border-accent">
           <AutoTextarea
             value={input}
             onChange={setInput}
@@ -90,67 +110,88 @@ export function ChatPanel({ messages, status, busy, ready, hasDocs, onSend, onSt
                 submit();
               }
             }}
-            rows={1}
-            aria-label="提问"
-            placeholder={ready ? "问点什么…  Enter 发送，Shift+Enter 换行" : "先在右上角「设置」里配置模型"}
-            className="max-h-40 flex-1 resize-none bg-transparent px-2 py-1.5 text-[14px] leading-6 text-text outline-none placeholder:text-text-4"
-            disabled={!ready}
+            rows={2}
+            aria-label="输入消息"
+            placeholder={p.ready ? "问点什么，或者让我帮你整理资料…" : "先在左下角「设置」里配置模型"}
+            className="max-h-52 w-full resize-none bg-transparent px-4 pt-3.5 text-[14px] leading-6 text-text outline-none placeholder:text-text-4"
+            disabled={!p.ready}
           />
-          {busy ? (
-            <button
-              aria-label="停止"
-              onClick={onStop}
-              className="grid h-9 w-9 place-items-center rounded-xl bg-danger-soft text-danger"
-            >
-              <Square className="h-4 w-4" fill="currentColor" />
-            </button>
-          ) : (
-            <button
-              aria-label="发送"
-              onClick={() => submit()}
-              disabled={!input.trim() || !ready}
-              className="arc-btn-primary grid h-9 w-9 place-items-center rounded-xl disabled:opacity-40"
-            >
-              <ArrowUp className="h-4 w-4" />
-            </button>
-          )}
+          <div className="flex items-center gap-2 px-3 pb-2.5 pt-1">
+            <span className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-text-3">
+              <FileText className="h-3.5 w-3.5" />
+              {p.docCount === 0 ? "没有文档" : p.scopeCount ? `已选 ${p.scopeCount} 份文档` : `全部 ${p.docCount} 份文档`}
+            </span>
+            <span className="flex-1" />
+            <span className="num text-[11px] text-text-4">{p.model}</span>
+            {p.busy ? (
+              <button
+                aria-label="停止"
+                onClick={p.onStop}
+                className="grid h-8 w-8 place-items-center rounded-lg bg-text text-bg"
+              >
+                <Square className="h-3 w-3" fill="currentColor" />
+              </button>
+            ) : (
+              <button
+                aria-label="发送"
+                onClick={() => submit()}
+                disabled={!input.trim() || !p.ready}
+                className="grid h-8 w-8 place-items-center rounded-lg bg-accent text-white disabled:bg-track-idle disabled:text-text-4"
+              >
+                <ArrowUp className="h-4 w-4" />
+              </button>
+            )}
+          </div>
         </div>
+        <p className="mt-2 text-center text-[11px] text-text-4">
+          回答可能出错。带编号的结论来自你的文档，可以点开核对原文。
+        </p>
       </div>
     </section>
   );
 }
 
-function Answer({ m, onCite }: { m: Message; onCite: (h: Hit) => void }) {
-  const cited = citedNumbers(m.content).filter((n) => m.hits?.[n - 1]);
+function Assistant({
+  m,
+  startedAt,
+  onCite,
+  onApproval,
+}: {
+  m: Message;
+  startedAt: number | null;
+  onCite: (h: Hit) => void;
+  onApproval: (requestId: string, allow: boolean) => void;
+}) {
+  const blocks: Block[] = m.blocks?.length ? m.blocks : m.content ? [{ type: "text", text: m.content }] : [];
+  const fullText = blocks.map((b) => (b.type === "text" ? b.text : "")).join("\n");
+  const cited = citedNumbers(fullText).filter((n) => m.hits?.[n - 1]);
+
   return (
     <div className="flex flex-col gap-2.5">
-      {m.tools?.length ? (
-        <div className="flex flex-col gap-1">
-          {m.tools.map((t, j) => (
-            <ToolLine key={j} name={t.name} input={t.input} summary={t.summary} />
-          ))}
-        </div>
-      ) : null}
+      {blocks.map((b, i) =>
+        b.type === "text" ? (
+          <div key={i} className={`text-[14px] leading-7 ${m.error ? "text-danger" : "text-text"}`}>
+            <StreamMarkdown content={b.text} />
+          </div>
+        ) : (
+          <ToolRow key={b.toolUseId || i} b={b} onApproval={onApproval} />
+        ),
+      )}
 
-      <div className={`text-[14px] leading-7 ${m.error ? "text-danger" : "text-text"}`}>
-        <StreamMarkdown content={m.content} />
-        {m.pending && !m.content && <span className="arc-shimmer-text text-[13px]">思考中…</span>}
-      </div>
+      {m.pending && <Working startedAt={startedAt} />}
 
       {cited.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="mt-1 flex flex-wrap gap-1.5">
           {cited.map((n) => {
             const h = m.hits![n - 1];
             return (
               <button
                 key={n}
                 onClick={() => onCite(h)}
-                className="inline-flex max-w-[260px] items-center gap-1.5 rounded-full border border-hairline bg-surface-2 px-2.5 py-1 text-[12px] text-text-2 hover:border-accent hover:text-accent"
                 title={h.text.slice(0, 200)}
+                className="inline-flex max-w-[280px] items-center gap-1.5 rounded-md border border-hairline px-2 py-1 text-[12px] text-text-2 hover:border-accent hover:text-accent"
               >
-                <span className="num grid h-4 min-w-4 place-items-center rounded bg-accent px-1 text-[10px] text-white">
-                  {n}
-                </span>
+                <span className="num text-accent">[{n}]</span>
                 <span className="truncate">
                   {h.docTitle}
                   {h.page ? ` · 第 ${h.page} 页` : ""}
@@ -161,35 +202,105 @@ function Answer({ m, onCite }: { m: Message; onCite: (h: Hit) => void }) {
         </div>
       )}
 
-      {!m.pending && m.costUsd != null && (
+      {!m.pending && (m.durationMs != null || m.costUsd != null) && (
         <div className="num text-[11px] text-text-4">
-          检索到 {m.hits?.length ?? 0} 个片段 · 本次 ${m.costUsd.toFixed(4)}
+          {m.durationMs != null && `${(m.durationMs / 1000).toFixed(1)}s`}
+          {m.costUsd != null && ` · $${m.costUsd.toFixed(4)}`}
+          {m.hits?.length ? ` · 检索到 ${m.hits.length} 个片段` : ""}
         </div>
       )}
     </div>
   );
 }
 
-function ToolLine({ name, input, summary }: { name: string; input: Record<string, unknown>; summary?: string }) {
-  const short = name.replace("mcp__docagent__", "");
-  const isSearch = short === "search_docs";
-  const denied = summary?.includes("拒绝");
+/** 进行中的状态行：转圈 + 已用时 */
+function Working({ startedAt }: { startedAt: number | null }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(t);
+  }, []);
+  const secs = startedAt ? Math.max(0, Math.round((now - startedAt) / 1000)) : 0;
   return (
-    <div className="flex items-center gap-2 text-[12px] text-text-3">
-      {isSearch ? (
-        <Search className="h-3.5 w-3.5 text-text-4" />
-      ) : denied ? (
-        <X className="h-3.5 w-3.5 text-danger" />
-      ) : (
-        <Check className="h-3.5 w-3.5 text-good" />
+    <div className="flex items-center gap-2 text-[13px] text-text-3">
+      <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+      <span className="arc-shimmer-text">处理中…</span>
+      <span className="num text-[11px] text-text-4">{secs}s</span>
+    </div>
+  );
+}
+
+/** 一次工具调用：一行摘要，可展开看输入和结果；需要审批时在下面直接给按钮 */
+function ToolRow({ b, onApproval }: { b: Extract<Block, { type: "tool" }>; onApproval: Props["onApproval"] }) {
+  const [open, setOpen] = useState(false);
+  const short = b.name.replace("mcp__docagent__", "");
+  const isSearch = short === "search_docs";
+  const running = b.result == null && b.approval?.state !== "denied";
+  const label = isSearch ? "检索文档" : short === "save_note" ? "保存文件" : short;
+  const arg = String(isSearch ? (b.input.query ?? "") : (b.input.filename ?? ""));
+  const found = isSearch && b.result ? (b.result.match(/^\[\d+\]/gm)?.length ?? 0) : null;
+
+  const dot = b.isError || b.approval?.state === "denied"
+    ? "bg-danger"
+    : running
+      ? "bg-warm animate-pulse"
+      : "bg-good";
+
+  return (
+    <div className="text-[13px]">
+      <button
+        className="group flex w-full items-center gap-2 rounded-md py-0.5 text-left text-text-2 hover:text-text"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+        <span className="font-medium">{label}</span>
+        <span className="min-w-0 truncate text-text-3">{arg}</span>
+        {found != null && <span className="num shrink-0 text-[11px] text-text-4">{found} 个片段</span>}
+        <ChevronRight
+          className={`ml-auto h-3.5 w-3.5 shrink-0 text-text-4 transition-transform ${open ? "rotate-90" : ""}`}
+        />
+      </button>
+
+      {b.approval?.state === "pending" && (
+        <div className="ml-3.5 mt-2 rounded-xl border border-warm-ring bg-warm-tint-faint p-3">
+          <div className="text-[13px] text-text">允许保存这个文件吗？</div>
+          <div className="mt-0.5 text-[12px] text-text-3">会写到「文稿/DocAgent/{arg}」</div>
+          <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md bg-bg p-2.5 text-[12px] leading-5 text-text-2">
+            {String(b.input.content ?? "").slice(0, 1500)}
+          </pre>
+          <div className="mt-2.5 flex justify-end gap-2">
+            <button
+              className="arc-btn-secondary rounded-md px-3 py-1.5 text-[12px]"
+              onClick={() => onApproval(b.approval!.requestId, false)}
+            >
+              拒绝
+            </button>
+            <button
+              className="rounded-md bg-text px-3 py-1.5 text-[12px] text-bg"
+              onClick={() => onApproval(b.approval!.requestId, true)}
+            >
+              允许
+            </button>
+          </div>
+        </div>
       )}
-      <span>
-        {isSearch ? "检索" : "保存文件"}
-        <span className="text-text-2">
-          {" "}
-          {String(isSearch ? (input.query ?? "") : (input.filename ?? ""))}
-        </span>
-      </span>
+
+      {open && (
+        <div className="ml-3.5 mt-1.5 space-y-1.5 border-l border-hairline pl-3">
+          <pre className="num whitespace-pre-wrap break-all text-[11px] leading-5 text-text-3">
+            {JSON.stringify(b.input, null, 2).slice(0, 1200)}
+          </pre>
+          {b.result != null && (
+            <pre
+              className={`max-h-64 overflow-y-auto whitespace-pre-wrap rounded-md bg-bg p-2.5 text-[12px] leading-5 ${
+                b.isError ? "text-danger" : "text-text-2"
+              }`}
+            >
+              {b.result}
+            </pre>
+          )}
+        </div>
+      )}
     </div>
   );
 }

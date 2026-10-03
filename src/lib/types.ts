@@ -20,18 +20,28 @@ export interface Hit {
   distance: number;
 }
 
-export interface ToolCall {
-  name: string;
-  input: Record<string, unknown>;
-  summary?: string;
-}
+/** 助手消息是一条时间线：文字和工具调用按发生顺序排列 */
+export type Block =
+  | { type: "text"; text: string }
+  | {
+      type: "tool";
+      toolUseId: string;
+      name: string;
+      input: Record<string, unknown>;
+      result?: string;
+      isError?: boolean;
+      /** 等待用户审批时带着 requestId；处理完后记录结果 */
+      approval?: { requestId: string; state: "pending" | "allowed" | "denied" };
+    };
 
 export interface Message {
   role: "user" | "assistant";
+  /** 用户消息的正文；助手消息的最终文本（用于持久化检索和标题） */
   content: string;
+  blocks?: Block[];
   hits?: Hit[];
-  tools?: ToolCall[];
   costUsd?: number | null;
+  durationMs?: number;
   pending?: boolean;
   error?: boolean;
 }
@@ -64,8 +74,8 @@ export type AgentEvent =
   | { type: "exited" }
   | { type: "session"; id: string; sessionId: string }
   | { type: "delta"; id: string; text: string }
-  | { type: "tool"; id: string; name: string; input: Record<string, unknown> }
-  | { type: "tool_result"; id: string; summary: string }
+  | { type: "tool"; id: string; toolUseId: string; name: string; input: Record<string, unknown> }
+  | { type: "tool_result"; id: string; toolUseId: string; text: string; isError: boolean }
   | { type: "approval_request"; id: string; requestId: string; name: string; input: Record<string, unknown> }
   | { type: "result"; id: string; text: string; sessionId: string | null; costUsd: number | null; turns: number | null; hits: Hit[] }
   | { type: "error"; id?: string; message: string };
