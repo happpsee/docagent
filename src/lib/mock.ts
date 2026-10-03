@@ -53,6 +53,8 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
     const meta = (m: Message) => JSON.stringify({ blocks: m.blocks, hits: m.hits, costUsd: m.costUsd, durationMs: m.durationMs });
     return (args?.sessionId === "s1" ? messages.map((m) => ({ role: m.role, content: m.content, meta: meta(m) })) : []) as T;
   }
+  if (cmd === "document_text") return sampleMd as T;
+  if (cmd === "import_paths") return { imported: 0, failed: [] } as T;
   if (cmd === "read_file_bytes") {
     const buf = String(args?.path).endsWith(".pdf")
       ? new Uint8Array(await (await fetch(samplePdf)).arrayBuffer())

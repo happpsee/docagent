@@ -379,6 +379,30 @@ pub fn search_text(
     Ok(hits)
 }
 
+/// 同一路径重复导入时，先把旧的那份删掉（文件改过后重新导入就是更新）
+pub fn delete_by_path(conn: &mut Connection, path: &str) -> Result<()> {
+    let ids: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT id FROM docs WHERE path = ?1")?;
+        let rows = stmt.query_map(params![path], |r| r.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for id in ids {
+        delete_document(conn, &id)?;
+    }
+    Ok(())
+}
+
+pub fn doc_path(conn: &Connection, doc_id: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT path FROM docs WHERE id = ?1",
+            params![doc_id],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten())
+}
+
 #[derive(Debug, Serialize)]
 pub struct SessionOut {
     pub id: String,

@@ -4,22 +4,24 @@
 //!   DOCAGENT_TEST_KEY=sk-... cargo test --test e2e -- --ignored --nocapture
 //! 可选：DOCAGENT_TEST_BASE_URL / DOCAGENT_TEST_MODEL
 
-use docagent_lib::{db, server};
+use docagent_lib::{chunk, db, parse, server};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
-fn chunks(text: &str) -> Vec<db::TextChunk> {
-    text.split("\n## ")
-        .enumerate()
-        .map(|(i, t)| db::TextChunk {
-            idx: i as i64,
-            page: None,
-            text: t.trim().to_string(),
+/// 和应用里的导入走同一条链路：Rust 解析 → 分块
+fn chunks(path: &Path) -> (Vec<db::TextChunk>, &'static str, Option<i64>) {
+    let parsed = parse::extract(path).expect("解析失败");
+    let chunks = chunk::chunk_pages(&parsed.pages)
+        .into_iter()
+        .map(|c| db::TextChunk {
+            idx: c.idx,
+            page: c.page,
+            text: c.text,
         })
-        .filter(|c| !c.text.is_empty())
-        .collect()
+        .collect();
+    (chunks, parsed.kind, parsed.page_count)
 }
 
 struct Run {
@@ -127,9 +129,10 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
 
     // 1. 建库并导入两份测试合同
     let mut conn = db::open(&tmp.join("test.db")).unwrap();
-    for name in ["采购合同.md", "服务协议.md"] {
-        let text = std::fs::read_to_string(root.join("test-docs").join(name)).unwrap();
-        db::add_document_text(&mut conn, name, None, "md", None, &chunks(&text)).unwrap();
+    // 采购合同用 PDF 版本，顺带验证 PDF 的页码能带到引用里
+    for name in ["采购合同.pdf", "服务协议.md"] {
+        let (chunks, kind, pages) = chunks(&root.join("test-docs").join(name));
+        db::add_document_text(&mut conn, name, None, kind, pages, &chunks).unwrap();
     }
     let conn = Arc::new(Mutex::new(conn));
     let api = server::start(conn, save_dir.clone()).unwrap();

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronRight, Loader2 } from "lucide-react";
 import { citedNumbers } from "@/lib/citations";
-import type { Block, Hit, Message } from "@/lib/types";
+import type { Block, Hit, Message, Quote } from "@/lib/types";
 import { StreamMarkdown } from "./StreamMarkdown";
 import { Composer } from "./Composer";
 
@@ -21,6 +21,9 @@ interface Props {
   onStop: () => void;
   onCite: (hit: Hit) => void;
   onApproval: (requestId: string, allow: boolean) => void;
+  quote: Quote | null;
+  onClearQuote: () => void;
+  onOpenQuote: (q: Quote) => void;
 }
 
 const SUGGESTIONS = ["这些资料主要讲了什么？", "列出里面所有的金额和期限", "有哪些需要注意的风险点？"];
@@ -52,6 +55,8 @@ export function ChatPanel(p: Props) {
       docCount={p.docCount}
       scopeCount={p.scopeCount}
       autoFocus
+      quote={p.quote}
+      onClearQuote={p.onClearQuote}
     />
   );
 
@@ -104,7 +109,20 @@ export function ChatPanel(p: Props) {
         <div className={`mx-auto flex max-w-[740px] flex-col gap-6 pb-8 ${p.compact ? "px-4 pt-4" : "px-6 pt-2"}`}>
           {p.messages.map((m, i) =>
             m.role === "user" ? (
-              <div key={i} className="flex justify-end">
+              <div key={i} className="flex flex-col items-end gap-1.5">
+                {m.quote && (
+                  <button
+                    className="max-w-[85%] rounded-xl border-l-2 border-accent bg-accent-dim px-3 py-2 text-left hover:bg-accent-soft"
+                    onClick={() => p.onOpenQuote(m.quote!)}
+                    title="回到原文"
+                  >
+                    <div className="line-clamp-3 text-[12px] leading-5 text-text-2">{m.quote.text}</div>
+                    <div className="mt-0.5 text-[11px] text-text-4">
+                      {m.quote.docTitle}
+                      {m.quote.page ? ` · 第 ${m.quote.page} 页` : ""}
+                    </div>
+                  </button>
+                )}
                 <div className="max-w-[85%] whitespace-pre-wrap rounded-[18px] bg-segment-bg px-4 py-2.5 text-[15px] leading-6 text-text">
                   {m.content}
                 </div>

@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import * as pdfjs from "pdfjs-dist";
 import { TextLayer, type PDFDocumentProxy } from "pdfjs-dist";
+import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "pdfjs-dist/web/pdf_viewer.css";
+import { BookOpenText, MessageSquareQuote, Search } from "lucide-react";
 import * as api from "@/lib/api";
 import { locate } from "@/lib/citations";
-import { parseFile } from "@/lib/parse";
 import type { Doc } from "@/lib/types";
+
+pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+
+export type SelectionAction = "ask" | "explain" | "related";
 import { ModalCloseButton } from "./ui/ModalCloseButton";
 
 export interface ReadTarget {
@@ -22,18 +27,22 @@ interface Props {
   doc: Doc;
   target: ReadTarget;
   onClose: () => void;
+  /** 用户对选中的文字发起操作 */
+  onSelection: (action: SelectionAction, text: string, page: number | null) => void;
 }
 
 const norm = (s: string) => s.normalize("NFKC").replace(/\s+/g, "");
 
 /** 文档阅读器：PDF 逐页渲染（带可选中的文字层），其它格式显示全文。
  *  从引用跳过来时滚到那一页并高亮被引用的片段。 */
-export function Reader({ doc, target, onClose }: Props) {
+export function Reader({ doc, target, onClose, onSelection }: Props) {
+  const root = useRef<HTMLElement>(null);
   const [page, setPage] = useState(1);
   const [pages, setPages] = useState<number | null>(doc.pages);
 
   return (
-    <section className="flex min-w-0 flex-1 flex-col bg-bg-grad-b/50">
+    <section ref={root} className="relative flex min-w-0 flex-1 flex-col bg-bg-grad-b/50">
+      <SelectionMenu root={root} onAction={onSelection} />
       <header className="flex items-center gap-3 border-b border-hairline bg-bg px-5 py-2.5">
         <div className="min-w-0 flex-1 truncate text-[13px] font-medium text-text">{doc.title}</div>
         {pages ? (
@@ -242,9 +251,8 @@ function TextView({ doc, target }: { doc: Doc; target: ReadTarget }) {
     let dead = false;
     void (async () => {
       try {
-        const bytes = new Uint8Array(await api.readFileBytes(doc.path!));
-        const parsed = await parseFile(doc.title, bytes);
-        if (!dead) setText(parsed.pages.map((p) => p.text).join("\n\n"));
+        const full = await api.documentText(doc.id);
+        if (!dead) setText(full);
       } catch (err) {
         if (!dead) setError(err instanceof Error ? err.message : String(err));
       }
@@ -252,7 +260,7 @@ function TextView({ doc, target }: { doc: Doc; target: ReadTarget }) {
     return () => {
       dead = true;
     };
-  }, [doc.path, doc.title]);
+  }, [doc.id]);
 
   useEffect(() => {
     markRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -278,6 +286,83 @@ function TextView({ doc, target }: { doc: Doc; target: ReadTarget }) {
           </>
         )}
       </article>
+    </div>
+  );
+}
+
+/** 划词菜单：在阅读器里选中文字后浮出来，三个动作都会带着引文发到对话里 */
+function SelectionMenu({
+  root,
+  onAction,
+}: {
+  root: React.RefObject<HTMLElement | null>;
+  onAction: (action: SelectionAction, text: string, page: number | null) => void;
+}) {
+  const [menu, setMenu] = useState<{ x: number; y: number; text: string; page: number | null } | null>(null);
+
+  useEffect(() => {
+    function update() {
+      const sel = window.getSelection();
+      const host = root.current;
+      if (!sel || sel.isCollapsed || !host || !sel.rangeCount) return setMenu(null);
+      const range = sel.getRangeAt(0);
+      if (!host.contains(range.commonAncestorContainer)) return setMenu(null);
+      const text = sel.toString().replace(/\s+/g, " ").trim();
+      if (text.length < 2) return setMenu(null);
+      const rects = range.getClientRects();
+      const last = rects[rects.length - 1] ?? range.getBoundingClientRect();
+      const anchor = sel.anchorNode instanceof Element ? sel.anchorNode : sel.anchorNode?.parentElement;
+      const pageEl = anchor?.closest("[data-page]");
+      const hostRect = host.getBoundingClientRect();
+      setMenu({
+        // 相对阅读器定位，夹在可视范围内
+        x: Math.min(Math.max(last.right - hostRect.left, 130), hostRect.width - 130),
+        y: Math.min(last.bottom - hostRect.top + 8, hostRect.height - 48),
+        text: text.slice(0, 2000),
+        page: pageEl ? Number(pageEl.getAttribute("data-page")) : null,
+      });
+    }
+    const hide = (e: Event) => {
+      // 点菜单本身不算
+      if (e.target instanceof Element && e.target.closest("[data-selection-menu]")) return;
+      setMenu(null);
+    };
+    document.addEventListener("mouseup", update);
+    document.addEventListener("mousedown", hide);
+    const host = root.current;
+    host?.addEventListener("scroll", hide, true);
+    return () => {
+      document.removeEventListener("mouseup", update);
+      document.removeEventListener("mousedown", hide);
+      host?.removeEventListener("scroll", hide, true);
+    };
+  }, [root]);
+
+  if (!menu) return null;
+  const act = (a: SelectionAction) => {
+    onAction(a, menu.text, menu.page);
+    window.getSelection()?.removeAllRanges();
+    setMenu(null);
+  };
+  const btn = "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px] text-text-2 hover:bg-nav-card hover:text-text";
+  return (
+    <div
+      data-selection-menu
+      className="absolute z-20 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-hairline-strong bg-surface-2 p-1 shadow-[0_6px_24px_-6px_rgb(0_0_0/0.25)]"
+      style={{ left: menu.x, top: menu.y }}
+    >
+      <button className={btn} onClick={() => act("ask")}>
+        <MessageSquareQuote className="h-3.5 w-3.5 text-accent" />
+        问这段
+      </button>
+      <button className={btn} onClick={() => act("explain")}>
+        <BookOpenText className="h-3.5 w-3.5" />
+        解释
+      </button>
+      <button className={btn} onClick={() => act("related")}>
+        <Search className="h-3.5 w-3.5" />
+        找相关
+      </button>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
-import { ArrowUp, FileText, Square } from "lucide-react";
+import { ArrowUp, FileText, Quote as QuoteIcon, Square, X } from "lucide-react";
+import type { Quote } from "@/lib/types";
 
 interface Props {
   value: string;
@@ -12,6 +13,9 @@ interface Props {
   docCount: number;
   scopeCount: number;
   autoFocus?: boolean;
+  /** 从阅读器带过来的引文，会和问题一起发出去 */
+  quote?: Quote | null;
+  onClearQuote?: () => void;
 }
 
 /** 输入框：一个大圆角卡片，文本区随内容长高，底部一行放检索范围、模型和发送 */
@@ -29,11 +33,31 @@ export function Composer(p: Props) {
     if (h > 0) el.style.height = `${Math.min(h, 220)}px`;
   }, [p.value]);
 
+  // 带着引文过来时把光标放进输入框，直接就能打字
+  useEffect(() => {
+    if (p.quote) ref.current?.focus();
+  }, [p.quote]);
+
   const scope =
     p.docCount === 0 ? "还没有文档" : p.scopeCount ? `已选 ${p.scopeCount} 份文档` : `全部 ${p.docCount} 份文档`;
 
   return (
     <div className="rounded-[20px] border border-hairline-strong bg-surface-2 shadow-[0_2px_12px_-4px_rgb(0_0_0/0.08)] transition-colors focus-within:border-text-4">
+      {p.quote && (
+        <div className="mx-3 mt-3 flex items-start gap-2 rounded-xl bg-segment-bg px-3 py-2">
+          <QuoteIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent" />
+          <div className="min-w-0 flex-1">
+            <div className="line-clamp-3 text-[12px] leading-5 text-text-2">{p.quote.text}</div>
+            <div className="mt-0.5 truncate text-[11px] text-text-4">
+              {p.quote.docTitle}
+              {p.quote.page ? ` · 第 ${p.quote.page} 页` : ""}
+            </div>
+          </div>
+          <button aria-label="移除引文" onClick={p.onClearQuote} className="text-text-4 hover:text-text">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
       <textarea
         ref={ref}
         value={p.value}
@@ -41,7 +65,7 @@ export function Composer(p: Props) {
         autoFocus={p.autoFocus}
         disabled={!p.ready}
         aria-label="输入消息"
-        placeholder={p.ready ? "问点什么，或者让我帮你整理资料…" : "先在左下角配置模型"}
+        placeholder={!p.ready ? "先在左下角配置模型" : p.quote ? "就这段话问点什么…" : "问点什么，或者让我帮你整理资料…"}
         onChange={(e) => p.onChange(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {

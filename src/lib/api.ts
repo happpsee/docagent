@@ -8,17 +8,38 @@ export const isPreview = !inTauri;
 const invoke = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
   inTauri ? tauriInvoke<T>(cmd, args) : mockInvoke<T>(cmd, args);
 
-import type { AgentEvent, Block, Doc, DocKind, Hit, Message, Session } from "./types";
+import type { AgentEvent, Block, Doc, DocKind, Hit, Message, Quote, Session } from "./types";
 
-export async function addDocument(
-  title: string,
-  path: string | null,
-  kind: DocKind,
-  pages: number | null,
-  chunks: { idx: number; page: number | null; text: string }[],
-): Promise<string> {
-  return invoke<string>("add_document", { title, path, kind, pages, chunks });
+export interface ImportProgress {
+  name: string;
+  stage: "parsing" | "indexing" | "done" | "error";
+  index: number;
+  total: number;
+  message: string | null;
 }
+
+/** 导入文件或文件夹（解析、分块、建索引都在 Rust 后台线程里做） */
+export const importPaths = (paths: string[]) =>
+  invoke<{ imported: number; failed: string[] }>("import_paths", { paths });
+
+export const onImportProgress = (fn: (p: ImportProgress) => void): Promise<UnlistenFn> =>
+  inTauri ? listen<ImportProgress>("import-progress", (e) => fn(e.payload)) : Promise.resolve(() => {});
+
+/** 拖文件/文件夹到窗口上 */
+export async function onFileDrop(fn: (paths: string[]) => void, onHover: (over: boolean) => void): Promise<UnlistenFn> {
+  if (!inTauri) return () => {};
+  const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+  return getCurrentWebview().onDragDropEvent((e) => {
+    if (e.payload.type === "enter" || e.payload.type === "over") onHover(true);
+    else if (e.payload.type === "leave") onHover(false);
+    else if (e.payload.type === "drop") {
+      onHover(false);
+      if (e.payload.paths.length) fn(e.payload.paths);
+    }
+  });
+}
+
+export const documentText = (docId: string) => invoke<string>("document_text", { docId });
 
 export async function listDocuments(): Promise<Doc[]> {
   const raw = await invoke<
@@ -57,6 +78,7 @@ export const upsertSession = (id: string, title: string, sdkSessionId: string | 
 export const deleteSession = (id: string) => invoke<void>("delete_session", { id });
 
 interface MessageMeta {
+  quote?: Quote;
   blocks?: Block[];
   hits?: Hit[];
   costUsd?: number | null;
@@ -70,6 +92,7 @@ export const addMessage = (sessionId: string, m: Message) =>
     role: m.role,
     content: m.content,
     meta: JSON.stringify({
+      quote: m.quote,
       blocks: m.blocks,
       hits: m.hits,
       costUsd: m.costUsd,

@@ -24,9 +24,9 @@ WebView（React）  ←Tauri 命令/事件→  Rust  ←stdin/stdout JSON→  si
                                                └── 127.0.0.1 本地接口 ──┘
 ```
 
-- **Rust**（`src-tauri/`）：存储（文档、向量、会话）、文件读写、管理 sidecar 进程
+- **Rust**（`src-tauri/`）：文档解析与分块、存储（文档、向量、会话）、管理 sidecar 进程
 - **sidecar**（`sidecar/agent.ts`）：agent 循环、工具调用、会话续接，全部交给 Claude Agent SDK
-- **前端**（`src/`）：文档解析（pdf.js / mammoth）和界面
+- **前端**（`src/`）：界面和阅读器（PDF 用 pdf.js 渲染）
 
 sidecar 的工具（检索、保存）通过只绑本机、带一次性 token 的 HTTP 接口调回 Rust。
 

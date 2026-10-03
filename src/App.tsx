@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
-import { Reader, type ReadTarget } from "./components/Reader";
+import { Reader, type ReadTarget, type SelectionAction } from "./components/Reader";
 import * as api from "./lib/api";
 import {
   DEFAULT_SETTINGS,
@@ -11,6 +11,7 @@ import {
   type Doc,
   type Hit,
   type Message,
+  type Quote,
   type Session,
   type Settings,
 } from "./lib/types";
@@ -31,6 +32,9 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [reading, setReading] = useState<ReadTarget | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  const [quote, setQuote] = useState<Quote | null>(null);
+  const [importing, setImporting] = useState<string | null>(null);
+  const [dropHover, setDropHover] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
   // 事件回调里要读最新值，用 ref 避免闭包拿到旧状态
@@ -173,6 +177,37 @@ export function App() {
     };
   }, [onEvent]);
 
+  const importPaths = useCallback(
+    async (paths: string[]) => {
+      setImporting("准备导入…");
+      try {
+        const res = await api.importPaths(paths);
+        if (res.failed.length) setError(`有 ${res.failed.length} 个文件没导入成功：${res.failed.slice(0, 3).join("；")}`);
+      } catch (err) {
+        setError(String(err));
+      } finally {
+        setImporting(null);
+        refreshDocs();
+      }
+    },
+    [refreshDocs],
+  );
+
+  // 导入进度 + 拖文件进窗口
+  useEffect(() => {
+    const stageText = { parsing: "解析", indexing: "建索引", done: "完成", error: "失败" } as const;
+    const un1 = api.onImportProgress((p) => {
+      const tag = p.total > 1 ? `(${p.index}/${p.total}) ` : "";
+      setImporting(`${tag}${stageText[p.stage]} ${p.name}`);
+      if (p.stage === "done") refreshDocs();
+    });
+    const un2 = api.onFileDrop((paths) => void importPaths(paths), setDropHover);
+    return () => {
+      void un1.then((f) => f());
+      void un2.then((f) => f());
+    };
+  }, [importPaths, refreshDocs]);
+
   // 启动：读设置 → 起 agent → 读文档和会话
   useEffect(() => {
     void (async () => {
@@ -214,8 +249,9 @@ export function App() {
     }
   }
 
-  async function send(question: string) {
+  async function send(question: string, withQuote: Quote | null = quote) {
     setError(null);
+    setQuote(null);
     let session = current;
     try {
       if (!session) {
@@ -228,7 +264,7 @@ export function App() {
         await api.upsertSession(session.id, session.title, null);
         setCurrent(session);
       }
-      const user: Message = { role: "user", content: question };
+      const user: Message = { role: "user", content: question, ...(withQuote ? { quote: withQuote } : {}) };
       await api.addMessage(session.id, user);
       setMessages((m) => [...m, user, { role: "assistant", content: "", blocks: [], pending: true }]);
       const id = crypto.randomUUID();
@@ -239,7 +275,10 @@ export function App() {
       await api.agentSend({
         type: "ask",
         id,
-        question,
+        // 引文拼进发给助手的文本里；界面上问题和引文分开显示
+        question: withQuote
+          ? `我在《${withQuote.docTitle}》${withQuote.page ? `第 ${withQuote.page} 页` : ""}选中了这段原文：\n"""\n${withQuote.text}\n"""\n\n${question}`
+          : question,
         sessionId: session.sdkSessionId ?? undefined,
         docIds: selected.size ? [...selected] : undefined,
         k: settings.topK,
@@ -294,6 +333,21 @@ export function App() {
   function closeReader() {
     setReading(null);
     setCollapsed(false);
+  }
+
+  /** 阅读器里划词后的三个动作 */
+  function onSelection(action: SelectionAction, text: string, page: number | null) {
+    const d = docs.find((x) => x.id === reading?.docId);
+    if (!d) return;
+    const q: Quote = { text, docId: d.id, docTitle: d.title, page };
+    if (action === "ask") return setQuote(q); // 放进输入框，等用户写问题
+    if (busy || agent !== "ready") return setQuote(q);
+    void send(
+      action === "explain"
+        ? "解释一下这段话：它是什么意思，在这份文档里起什么作用。"
+        : "在我的文档里找出和这段内容相关的其它地方，说明它们之间的关系（有没有呼应、补充或矛盾）。",
+      q,
+    );
   }
 
   function answerApproval(requestId: string, allow: boolean) {
@@ -352,8 +406,12 @@ export function App() {
           readingId={reading?.docId ?? null}
           onToggleCollapsed={() => setCollapsed((v) => !v)}
           onOpenDoc={(d) => openDoc(d.id)}
+          progress={importing}
+          onImport={(paths) => void importPaths(paths)}
         />
-        {readingDoc && reading && <Reader doc={readingDoc} target={reading} onClose={closeReader} />}
+        {readingDoc && reading && (
+          <Reader doc={readingDoc} target={reading} onClose={closeReader} onSelection={onSelection} />
+        )}
         <div className={readingDoc ? "flex w-[400px] shrink-0 border-l border-hairline" : "flex min-w-0 flex-1"}>
           <ChatPanel
             title={current?.title ?? null}
@@ -369,9 +427,18 @@ export function App() {
             onStop={stop}
             onCite={openHit}
             onApproval={answerApproval}
+            quote={quote}
+            onClearQuote={() => setQuote(null)}
+            onOpenQuote={(q) => openDoc(q.docId, q.page, q.text)}
           />
         </div>
       </main>
+
+      {dropHover && (
+        <div className="pointer-events-none fixed inset-3 z-30 grid place-items-center rounded-2xl border-2 border-dashed border-accent bg-accent-dim backdrop-blur-[2px]">
+          <div className="display-serif text-[22px] text-text">松手导入</div>
+        </div>
+      )}
 
       {showSettings && (
         <SettingsModal

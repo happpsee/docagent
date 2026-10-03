@@ -8,9 +8,11 @@
 //! sidecar 的工具通过只绑本机的 HTTP 接口调回 Rust 做检索和保存。
 
 pub mod agent;
+pub mod chunk;
 pub mod commands;
 pub mod db;
 pub mod embed;
+pub mod parse;
 pub mod server;
 
 use std::path::PathBuf;
@@ -55,7 +57,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::add_document,
+            commands::import_paths,
+            commands::document_text,
             commands::list_documents,
             commands::delete_document,
             commands::reset_index,

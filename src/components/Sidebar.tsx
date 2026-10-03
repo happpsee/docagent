@@ -2,8 +2,6 @@ import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, CircleCheck, FileText, PanelLeft, Plus, Settings as SettingsIcon, SquarePen, Trash2 } from "lucide-react";
 import * as api from "@/lib/api";
-import { chunkPages } from "@/lib/chunk";
-import { kindFromName, parseFile } from "@/lib/parse";
 import type { Doc, Session } from "@/lib/types";
 
 interface Props {
@@ -17,6 +15,9 @@ interface Props {
   readingId: string | null;
   onToggleCollapsed: () => void;
   onOpenDoc: (d: Doc) => void;
+  /** 导入进度文案；null 表示没有在导入 */
+  progress: string | null;
+  onImport: (paths: string[]) => void;
   onNewChat: () => void;
   onOpenSession: (s: Session) => void;
   onDeleteSession: (s: Session) => void;
@@ -35,7 +36,6 @@ function ago(ts: number): string {
 }
 
 export function Sidebar(p: Props) {
-  const [progress, setProgress] = useState<string | null>(null);
   const [docsOpen, setDocsOpen] = useState(true);
 
   async function importFiles() {
@@ -44,26 +44,8 @@ export function Sidebar(p: Props) {
       filters: [{ name: "文档", extensions: ["pdf", "docx", "md", "markdown", "txt"] }],
     });
     if (!picked) return;
-    const paths = Array.isArray(picked) ? picked : [picked];
     setDocsOpen(true);
-    for (const [i, path] of paths.entries()) {
-      const name = path.split("/").pop() ?? path;
-      const tag = paths.length > 1 ? `(${i + 1}/${paths.length}) ` : "";
-      try {
-        setProgress(`${tag}读取 ${name}`);
-        const bytes = new Uint8Array(await api.readFileBytes(path));
-        setProgress(`${tag}解析 ${name}`);
-        const parsed = await parseFile(name, bytes);
-        const chunks = chunkPages(parsed.pages);
-        if (!chunks.length) throw new Error("解析后没有内容");
-        setProgress(`${tag}建索引 · ${chunks.length} 个片段`);
-        await api.addDocument(name, path, kindFromName(name), parsed.pageCount, chunks);
-        p.onDocsChanged();
-      } catch (err) {
-        p.onError(`${name}：${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-    setProgress(null);
+    p.onImport(Array.isArray(picked) ? picked : [picked]);
   }
 
   const tone = { ok: "bg-good", warn: "bg-warm", bad: "bg-danger", idle: "bg-track-idle" }[p.status.tone];
@@ -124,14 +106,14 @@ export function Sidebar(p: Props) {
             className="grid h-5 w-5 place-items-center rounded hover:bg-nav-card-hover"
             onClick={(e) => {
               e.stopPropagation();
-              if (!progress) void importFiles();
+              if (!p.progress) void importFiles();
             }}
           >
             <Plus className="h-3.5 w-3.5" />
           </span>
         </button>
 
-        {progress && <div className="arc-shimmer-text px-2 py-1 text-[12px]">{progress}</div>}
+        {p.progress && <div className="arc-shimmer-text px-2 py-1 text-[12px]">{p.progress}</div>}
 
         {docsOpen &&
           (p.docs.length ? (
@@ -173,7 +155,7 @@ export function Sidebar(p: Props) {
               className="w-full rounded-lg border border-dashed border-hairline-strong px-2 py-3 text-[12px] text-text-3 hover:border-accent hover:text-accent"
               onClick={() => void importFiles()}
             >
-              导入 PDF / Word / Markdown
+              点这里导入，或把文件、文件夹拖进窗口
             </button>
           ))}
         {docsOpen && p.docs.length > 0 && (

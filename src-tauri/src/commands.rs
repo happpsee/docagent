@@ -3,6 +3,10 @@
 use crate::agent::{self, Provider};
 use crate::db::{self, DocOut, MessageOut, SessionOut, TextChunk};
 use crate::AppState;
+use crate::{chunk, parse};
+use serde::Serialize;
+use std::path::{Path, PathBuf};
+use tauri::Emitter;
 use tauri::{AppHandle, Manager, State};
 
 fn e(err: anyhow::Error) -> String {
@@ -13,17 +17,153 @@ const SETTINGS_KEY: &str = "settings";
 
 // ---------- 文档 ----------
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ImportProgress {
+    name: String,
+    /// parsing / indexing / done / error
+    stage: &'static str,
+    index: usize,
+    total: usize,
+    message: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ImportSummary {
+    pub imported: usize,
+    pub failed: Vec<String>,
+}
+
+/// 把用户选的路径展开成文件清单：文件夹递归找支持的类型，跳过隐藏文件
+fn collect_files(paths: &[String]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for p in paths {
+        let path = Path::new(p);
+        if path.is_dir() {
+            let walker = walkdir::WalkDir::new(path)
+                .max_depth(8)
+                .into_iter()
+                .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'));
+            for entry in walker.flatten() {
+                if entry.file_type().is_file() && parse::kind_of(entry.path()).is_some() {
+                    out.push(entry.into_path());
+                }
+            }
+        } else {
+            out.push(path.to_path_buf());
+        }
+    }
+    out
+}
+
+fn import_one(
+    conn: &std::sync::Mutex<rusqlite::Connection>,
+    path: &Path,
+    on_stage: impl Fn(&'static str),
+) -> anyhow::Result<()> {
+    on_stage("parsing");
+    // 解析和分块不占数据库锁，别的操作（比如同时在提问检索）不会被卡住
+    let parsed = parse::extract(path)?;
+    let chunks: Vec<TextChunk> = chunk::chunk_pages(&parsed.pages)
+        .into_iter()
+        .map(|c| TextChunk {
+            idx: c.idx,
+            page: c.page,
+            text: c.text,
+        })
+        .collect();
+    if chunks.is_empty() {
+        anyhow::bail!("解析后没有内容");
+    }
+    on_stage("indexing");
+    let title = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let path_str = path.to_string_lossy().to_string();
+    let mut conn = conn.lock().map_err(|_| anyhow::anyhow!(LOCK))?;
+    db::delete_by_path(&mut conn, &path_str)?;
+    db::add_document_text(
+        &mut conn,
+        &title,
+        Some(&path_str),
+        parsed.kind,
+        parsed.page_count,
+        &chunks,
+    )?;
+    Ok(())
+}
+
+/// 导入文件或文件夹。解析在后台线程做，进度通过 import-progress 事件推给界面。
 #[tauri::command]
-pub fn add_document(
+pub async fn import_paths(
+    app: AppHandle,
     state: State<'_, AppState>,
-    title: String,
-    path: Option<String>,
-    kind: String,
-    pages: Option<i64>,
-    chunks: Vec<TextChunk>,
-) -> Result<String, String> {
-    let mut conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
-    db::add_document_text(&mut conn, &title, path.as_deref(), &kind, pages, &chunks).map_err(e)
+    paths: Vec<String>,
+) -> Result<ImportSummary, String> {
+    let conn = state.conn.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let files = collect_files(&paths);
+        let total = files.len();
+        let mut summary = ImportSummary {
+            imported: 0,
+            failed: vec![],
+        };
+        for (i, file) in files.iter().enumerate() {
+            let name = file
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let emit = |stage: &'static str, message: Option<String>| {
+                let _ = app.emit(
+                    "import-progress",
+                    ImportProgress {
+                        name: name.clone(),
+                        stage,
+                        index: i + 1,
+                        total,
+                        message,
+                    },
+                );
+            };
+            match import_one(&conn, file, |stage| emit(stage, None)) {
+                Ok(()) => {
+                    summary.imported += 1;
+                    emit("done", None);
+                }
+                Err(err) => {
+                    summary.failed.push(format!("{name}：{err}"));
+                    emit("error", Some(err.to_string()));
+                }
+            }
+        }
+        summary
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 取文档的全文（给阅读器显示非 PDF 文档用）
+#[tauri::command]
+pub async fn document_text(state: State<'_, AppState>, doc_id: String) -> Result<String, String> {
+    let path = {
+        let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+        db::doc_path(&conn, &doc_id).map_err(e)?
+    }
+    .ok_or_else(|| "找不到这份文档的原始文件".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        parse::extract(Path::new(&path))
+            .map(|p| {
+                p.pages
+                    .into_iter()
+                    .map(|(_, t)| t)
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            })
+            .map_err(e)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

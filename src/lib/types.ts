@@ -34,8 +34,18 @@ export type Block =
       approval?: { requestId: string; state: "pending" | "allowed" | "denied" };
     };
 
+/** 用户在阅读器里选中的一段原文，随问题一起发给助手 */
+export interface Quote {
+  text: string;
+  docId: string;
+  docTitle: string;
+  page: number | null;
+}
+
 export interface Message {
   role: "user" | "assistant";
+  /** 用户消息附带的引文 */
+  quote?: Quote;
   /** 用户消息的正文；助手消息的最终文本（用于持久化检索和标题） */
   content: string;
   blocks?: Block[];
