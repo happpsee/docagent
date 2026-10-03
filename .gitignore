@@ -6,3 +6,4 @@
 *.local
 /src-tauri/binaries
 /sidecar/node_modules
+/refs

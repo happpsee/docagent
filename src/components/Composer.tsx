@@ -21,8 +21,12 @@ export function Composer(p: Props) {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    // 先交还给 CSS（rows=1 + min-height 保证至少一行高），量到有效高度才写回去。
+    // 启动瞬间窗口可能还没完成布局，scrollHeight 会是 0；那时如果把 0 写进去，
+    // 文本区就塌掉、点不进去了（真实应用里出过这个问题）。
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+    const h = el.scrollHeight;
+    if (h > 0) el.style.height = `${Math.min(h, 220)}px`;
   }, [p.value]);
 
   const scope =
@@ -45,7 +49,7 @@ export function Composer(p: Props) {
             p.onSubmit();
           }
         }}
-        className="block w-full resize-none bg-transparent px-5 pb-1 pt-4 text-[15px] leading-6 text-text outline-none placeholder:text-text-4"
+        className="block min-h-[44px] w-full resize-none bg-transparent px-5 pb-1 pt-4 text-[15px] leading-6 text-text outline-none placeholder:text-text-4"
       />
       <div className="flex items-center gap-2 px-3 pb-3 pt-2">
         <span className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] text-text-3">
