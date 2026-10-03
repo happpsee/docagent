@@ -163,6 +163,8 @@ interface Reading {
   chapter: string;
   /** 读到全书的几分之几 */
   fraction: number;
+  /** 防剧透：只能用读过的部分回答 */
+  spoilerFree?: boolean;
 }
 
 /** 一轮提问的上下文。工具、闸门、审批都挂在它上面，而不是用全局的「当前提问」——
@@ -462,12 +464,13 @@ async function hostFetch(path: string, body: unknown) {
   return res.json();
 }
 
-async function searchDocs(q: string, docIds?: string[], k?: number): Promise<Hit[]> {
+async function searchDocs(q: string, docIds?: string[], k?: number, reading?: Reading): Promise<Hit[]> {
   if (!HOST_API) {
     // 未接宿主时的占位，便于单独测 sidecar
     return [{ docTitle: "占位文档", page: 1, text: `（未连接索引）检索词：${q}`, distance: 0.5 }];
   }
-  const out = (await hostFetch("/search", { query: q, docIds: docIds ?? null, k: k ?? 6 })) as { hits: Hit[] };
+  const bound = reading?.spoilerFree ? { docId: reading.docId, page: reading.page, fraction: reading.fraction } : null;
+  const out = (await hostFetch("/search", { query: q, docIds: docIds ?? null, k: k ?? 6, bound })) as { hits: Hit[] };
   return out.hits;
 }
 
@@ -513,7 +516,7 @@ function docTools(ask: Ask) {
           "用户限定了文档范围时只在那些文档里找。字面和语义两路一起找，可以换关键词多次调用。",
         { query: z.string().describe("检索语句，可与用户原问题不同；关键词比整句更准") },
         async ({ query: q }) => {
-          const hits = await searchDocs(q, ask.docIds, ask.k);
+          const hits = await searchDocs(q, ask.docIds, ask.k, ask.reading);
           // 累积到本轮上下文并分配全局编号：模型多次检索时 [n] 不会撞号，
           // 界面用同一份列表把 [n] 映射回原文位置
           const numbers = hits.map((h) => {
@@ -536,6 +539,9 @@ function docTools(ask: Ask) {
         async ({ number }) => {
           const r = ask.reading;
           if (!r) return text(NO_BOOK, true);
+          if (r.spoilerFree && number && r.page && number > r.page) {
+            return text("用户开了防剧透，还没读到那里，不能读后面的内容。", true);
+          }
           const out = (await hostFetch("/section", { docId: r.docId, page: number ?? r.page ?? null, fraction: r.fraction })) as {
             text: string;
             page: number | null;
@@ -690,7 +696,11 @@ async function handleAsk(msg: {
 
     const r = msg.reading;
     const prompt = r
-      ? `（用户正在阅读器里看《${r.docTitle}》${r.chapter ? `，当前在「${r.chapter}」` : ""}${r.page ? `，${where(r.docTitle, r.page)}` : ""}，读到全书 ${Math.round(r.fraction * 100)}%）\n\n${msg.question}`
+      ? `（用户正在阅读器里看《${r.docTitle}》${r.chapter ? `，当前在「${r.chapter}」` : ""}${r.page ? `，${where(r.docTitle, r.page)}` : ""}，读到全书 ${Math.round(r.fraction * 100)}%${
+          r.spoilerFree
+            ? "。用户开了防剧透：这本书只能依据他已经读过的部分回答，不要透露、不要暗示后面的情节；问到后面的事就说还没读到"
+            : ""
+        }）\n\n${msg.question}`
       : msg.question;
 
     const q = query({

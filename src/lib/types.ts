@@ -12,6 +12,31 @@ export interface Doc {
   hasCover: boolean;
   /** 读到全书的几分之几（0-1）；没打开过是 null */
   progress: number | null;
+  /** 上次阅读的时间（秒） */
+  readAt: number | null;
+}
+
+/** 透视：书里一段的要点，和这一段里出现的人物、概念 */
+export interface XRayEntity {
+  name: string;
+  type: string;
+  desc: string;
+  quote: string;
+}
+export interface XRayUnit {
+  unit: number;
+  page: number | null;
+  /** 这一段在全书里的起止位置（0-1） */
+  start: number;
+  end: number;
+  title: string;
+  summary: string;
+  entities: XRayEntity[];
+}
+export interface XRay {
+  units: XRayUnit[];
+  /** 全书一共多少段；units 比它少说明还没做完 */
+  total: number;
 }
 
 export type HighlightColor = "yellow" | "green" | "blue" | "pink" | "purple";
@@ -50,6 +75,8 @@ export interface ReaderPrefs {
   justify: boolean;
   /** PDF / 漫画：一次显示一页还是双页 */
   spread: "none" | "both";
+  /** 防剧透：透视和助手都只用读过的部分 */
+  spoilerFree: boolean;
 }
 
 export const DEFAULT_READER_PREFS: ReaderPrefs = {
@@ -62,6 +89,7 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
   theme: "warm",
   justify: true,
   spread: "none",
+  spoilerFree: true,
 };
 
 export interface Hit {
@@ -200,4 +228,5 @@ export interface ReadingInfo {
   page: number | null;
   chapter: string;
   fraction: number;
+  spoilerFree?: boolean;
 }

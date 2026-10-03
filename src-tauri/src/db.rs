@@ -21,6 +21,8 @@ pub struct DocOut {
     pub has_cover: bool,
     /// 读到全书的几分之几；没打开过是 null
     pub progress: Option<f64>,
+    /// 上次阅读的时间
+    pub read_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -159,6 +161,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         )?;
     }
     crate::fts::rebuild_if_empty(conn)?;
+    crate::xray::init_schema(conn)?;
     // 老库升级：docs 后来才加的列
     let has_author = conn
         .prepare("SELECT 1 FROM pragma_table_info('docs') WHERE name = 'author'")?
@@ -220,7 +223,8 @@ pub fn list_documents(conn: &Connection) -> Result<Vec<DocOut>> {
                 (SELECT COUNT(*) FROM chunks c WHERE c.doc_id = d.id),
                 d.author,
                 EXISTS(SELECT 1 FROM covers v WHERE v.doc_id = d.id),
-                (SELECT fraction FROM reading_state r WHERE r.doc_id = d.id)
+                (SELECT fraction FROM reading_state r WHERE r.doc_id = d.id),
+                (SELECT updated_at FROM reading_state r WHERE r.doc_id = d.id)
          FROM docs d ORDER BY d.created_at DESC",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -235,6 +239,7 @@ pub fn list_documents(conn: &Connection) -> Result<Vec<DocOut>> {
             author: r.get(7)?,
             has_cover: r.get(8)?,
             progress: r.get(9)?,
+            read_at: r.get(10)?,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -434,6 +439,8 @@ pub fn import_document(
                 params![id],
             )?;
             tx.execute("DELETE FROM chunks WHERE doc_id = ?1", params![id])?;
+            // 内容变了，按旧内容做的透视作废
+            tx.execute("DELETE FROM xray_units WHERE doc_id = ?1", params![id])?;
             tx.execute(
                 "UPDATE docs SET title = ?2, kind = ?3, pages = ?4, author = ?5 WHERE id = ?1",
                 params![id, doc.title, doc.kind, doc.pages, doc.author],

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, CircleCheck, FileText, PanelLeft, Plus, Settings as SettingsIcon, SquarePen, Trash2 } from "lucide-react";
+import { ChevronDown, CircleCheck, FileText, LibraryBig, PanelLeft, Plus, Settings as SettingsIcon, SquarePen, Trash2 } from "lucide-react";
 import * as api from "@/lib/api";
 import type { Doc, Session } from "@/lib/types";
 
@@ -25,6 +25,9 @@ interface Props {
   onDocsChanged: () => void;
   onOpenSettings: () => void;
   onError: (m: string) => void;
+  /** 主区域现在是不是书架 */
+  atLibrary: boolean;
+  onOpenLibrary: () => void;
 }
 
 function ago(ts: number): string {
@@ -57,7 +60,10 @@ export function Sidebar(p: Props) {
         <button className={btn} aria-label="展开侧栏" onClick={p.onToggleCollapsed}>
           <PanelLeft className="h-4 w-4" />
         </button>
-        <button className={btn} aria-label="新对话" onClick={p.onNewChat}>
+        <button className={btn} aria-label="书架" title="书架" onClick={p.onOpenLibrary}>
+          <LibraryBig className="h-4 w-4" />
+        </button>
+        <button className={btn} aria-label="新对话" title="新对话" onClick={p.onNewChat}>
           <SquarePen className="h-4 w-4" />
         </button>
         <span className="flex-1" />
@@ -83,7 +89,14 @@ export function Sidebar(p: Props) {
           </button>
         </div>
         <button
-          className="mt-3 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] text-text hover:bg-nav-card"
+          className={`mt-3 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] text-text hover:bg-nav-card ${p.atLibrary ? "bg-nav-card-active" : ""}`}
+          onClick={p.onOpenLibrary}
+        >
+          <LibraryBig className="h-4 w-4 text-text-3" />
+          书架
+        </button>
+        <button
+          className="mt-0.5 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] text-text hover:bg-nav-card"
           onClick={p.onNewChat}
         >
           <SquarePen className="h-4 w-4 text-text-3" />

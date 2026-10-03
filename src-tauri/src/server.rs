@@ -18,6 +18,8 @@ struct SearchReq {
     #[serde(rename = "docIds")]
     doc_ids: Option<Vec<String>>,
     k: Option<usize>,
+    /// 防剧透：某本书只搜用户读过的部分
+    bound: Option<crate::search::Bound>,
 }
 
 #[derive(Deserialize)]
@@ -81,7 +83,13 @@ pub fn start(conn: Arc<Mutex<Connection>>, save_dir: PathBuf) -> Result<LocalApi
 
 fn handle_search(conn: &Arc<Mutex<Connection>>, body: &str) -> Result<serde_json::Value> {
     let req: SearchReq = serde_json::from_str(body)?;
-    let hits = crate::search::hybrid(conn, &req.query, req.k.unwrap_or(6), req.doc_ids.as_deref())?;
+    let hits = crate::search::hybrid_bounded(
+        conn,
+        &req.query,
+        req.k.unwrap_or(6),
+        req.doc_ids.as_deref(),
+        req.bound.as_ref(),
+    )?;
     // sidecar 和前端都用 camelCase
     let hits: Vec<_> = hits
         .into_iter()

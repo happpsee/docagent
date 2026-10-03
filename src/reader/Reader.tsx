@@ -7,7 +7,9 @@ import {
   ChevronRight,
   List,
   NotebookPen,
+  ScanSearch,
   Search,
+  Sparkles,
   Type,
   Undo2,
 } from "lucide-react";
@@ -30,6 +32,7 @@ import { BookmarksPanel, NotesPanel, SearchPanel, TocPanel, type SearchGroup } f
 import { SelectionPopup, type PopupState } from "./SelectionPopup";
 import { PrefsPopover } from "./PrefsPopover";
 import { notesMarkdown } from "./export";
+import { figuresOf, lookup, useXRay, visibleUnits, XRayPanel } from "./XRay";
 
 export type SelectionAction = "ask" | "explain" | "related";
 
@@ -58,8 +61,8 @@ interface Props {
   onClose: () => void;
   /** 用户对选中的文字发起操作 */
   onSelection: (action: SelectionAction, text: string, page: number | null, cfi: string) => void;
-  /** 让助手整理这本书的笔记 */
-  onAskNotes: (doc: Doc) => void;
+  /** 就这本书向助手提一个问题（一键动作、整理笔记等） */
+  onAsk: (prompt: string) => void;
   /** 进度、封面变了，书架要刷新 */
   onDocsChanged: () => void;
   onError: (message: string) => void;
@@ -76,7 +79,15 @@ interface Loc {
   location?: { current: number; next: number; total: number };
 }
 
-type Panel = "toc" | "notes" | "bookmarks" | "search";
+type Panel = "toc" | "xray" | "notes" | "bookmarks" | "search";
+
+/** 一键动作：不用想怎么问，点一下就把这句话连同当前位置交给助手 */
+const QUICK: { name: string; prompt: string }[] = [
+  { name: "总结这一章", prompt: "总结我正在读的这一章：先用三句话说清讲了什么，再列出三到五个要点。" },
+  { name: "梳理人物关系", prompt: "梳理到我读到的位置为止出现过的人物：每个人是谁、彼此是什么关系。不要提我还没读到的内容。" },
+  { name: "这一章和前面的呼应", prompt: "我正在读的这一章，和前面的内容有哪些呼应、伏笔或者矛盾？指出具体的地方。" },
+  { name: "出几道题考考我", prompt: "根据我正在读的这一章出三道题考我，先只出题，等我回答后再讲解。" },
+];
 const PREFS_KEY = "reader";
 const NOTE_PREFIX = "foliate-note:";
 const CITE_ID = "__cite__";
@@ -92,7 +103,7 @@ export function Reader({
   onLocation,
   onClose,
   onSelection,
-  onAskNotes,
+  onAsk,
   onDocsChanged,
   onError,
 }: Props) {
@@ -122,6 +133,9 @@ export function Reader({
   /** 每条标记在第几节，算一次记下来 */
   const sectionOf = useRef(new Map<string, number>());
   const footnoteView = useRef<FoliateView | null>(null);
+  const [showQuick, setShowQuick] = useState(false);
+  const { xray, building, build, rebuild } = useXRay(doc.id, onError);
+  const lastInfo = useRef<ReadingInfo | null>(null);
   const onLocationRef = useRef(onLocation);
   onLocationRef.current = onLocation;
   const searchRun = useRef(0);
@@ -245,14 +259,17 @@ export function Reader({
           // 翻页了，浮在原位置上的菜单和脚注就不对了
           setPopup(null);
           setFootnote(null);
-          onLocationRef.current({
+          const info: ReadingInfo = {
             docId: doc.id,
             docTitle: doc.title,
             // 索引里 PDF 按页、EPUB 按节记了位置；其它格式没有
             page: (v.isFixedLayout || doc.kind === "epub") && l.section ? l.section.current + 1 : null,
             chapter: l.tocItem?.label?.trim() ?? "",
             fraction: l.fraction ?? 0,
-          });
+            spoilerFree: prefsRef.current.spoilerFree,
+          };
+          lastInfo.current = info;
+          onLocationRef.current(info);
           // 进度别每翻一页都写库，停下来再写
           clearTimeout(saveTimer);
           saveTimer = window.setTimeout(() => {
@@ -472,7 +489,13 @@ export function Reader({
   function updatePrefs(patch: Partial<ReaderPrefs>) {
     const next = { ...prefs, ...patch };
     setPrefs(next);
-    if (viewRef.current) applyPrefs(viewRef.current, next);
+    // 只改了防剧透开关的话不用重新排版
+    const layoutChanged = Object.keys(patch).some((k) => k !== "spoilerFree");
+    if (viewRef.current && layoutChanged) applyPrefs(viewRef.current, next);
+    if (lastInfo.current) {
+      lastInfo.current = { ...lastInfo.current, spoilerFree: next.spoilerFree };
+      onLocation(lastInfo.current);
+    }
     void api.setSetting(PREFS_KEY, JSON.stringify(next)).catch(() => {});
   }
 
@@ -714,6 +737,12 @@ export function Reader({
     setDrag(null);
   }
 
+  /** 透视里读过的部分出现的人物和概念：选中名字时直接告诉用户是谁 */
+  const figures = useMemo(
+    () => figuresOf(visibleUnits(xray, loc?.fraction ?? 0, prefs.spoilerFree)),
+    [xray, loc?.fraction, prefs.spoilerFree],
+  );
+
   const percent = drag != null ? Math.round(drag / 10) : loc ? Math.round((loc.fraction ?? 0) * 100) : 0;
   const where = fixed
     ? loc?.section
@@ -738,11 +767,15 @@ export function Reader({
         setPopup(null);
         setFootnote(null);
         setShowPrefs(false);
+        setShowQuick(false);
       }}
     >
       <header className="flex items-center gap-1 border-b border-hairline-soft px-3 py-2">
         <button className={tool(panel === "toc")} title="目录" aria-label="目录" onClick={() => togglePanel("toc")}>
           <List className="h-4 w-4" />
+        </button>
+        <button className={tool(panel === "xray")} title="透视：要点、人物与概念" aria-label="透视" onClick={() => togglePanel("xray")}>
+          <ScanSearch className="h-4 w-4" />
         </button>
         <button className={tool(panel === "notes")} title="笔记" aria-label="笔记" onClick={() => togglePanel("notes")}>
           <NotebookPen className="h-4 w-4" />
@@ -754,6 +787,15 @@ export function Reader({
           {doc.title}
           {doc.author ? <span className="ml-2 text-text-4">{doc.author}</span> : null}
         </div>
+        <button
+          data-floating-toggle
+          className={tool(showQuick)}
+          title="让助手…"
+          aria-label="让助手"
+          onClick={() => setShowQuick((v) => !v)}
+        >
+          <Sparkles className="h-4 w-4" />
+        </button>
         <button
           className={tool(!!here)}
           title={here ? "取消书签" : "加书签"}
@@ -785,6 +827,7 @@ export function Reader({
               {(
                 [
                   ["toc", "目录"],
+                  ["xray", "透视"],
                   ["notes", `笔记${highlights.length ? ` ${highlights.length}` : ""}`],
                   ["bookmarks", `书签${bookmarks.length ? ` ${bookmarks.length}` : ""}`],
                   ["search", "搜索"],
@@ -801,6 +844,29 @@ export function Reader({
             </nav>
             <div className="min-h-0 flex-1 overflow-y-auto">
               {panel === "toc" && <TocPanel toc={toc} current={loc?.tocItem?.href ?? null} onGo={goTo} fixed={fixed} total={loc?.section?.total ?? doc.pages ?? 0} page={loc?.section?.current ?? 0} />}
+              {panel === "xray" && (
+                <XRayPanel
+                  xray={xray}
+                  building={building}
+                  fraction={loc?.fraction ?? 0}
+                  spoilerFree={prefs.spoilerFree}
+                  onToggleSpoiler={() => updatePrefs({ spoilerFree: !prefs.spoilerFree })}
+                  onBuild={() => void build()}
+                  onRebuild={() => void rebuild()}
+                  onGoUnit={(u) => {
+                    const v = viewRef.current;
+                    if (!v) return;
+                    void (u.page ? v.goTo(u.page - 1) : v.goToFraction(u.start)).catch((err: unknown) => onError(String(err)));
+                  }}
+                  onGoQuote={(quote, u) => {
+                    const v = viewRef.current;
+                    if (v) void showCitation(v, { docId: doc.id, quote, page: u.page, nonce: Date.now() }).catch((err) => onError(String(err)));
+                  }}
+                  onAskAbout={(name) =>
+                    onAsk(`讲讲「${name}」到我读到的位置为止的来龙去脉：出现在哪些地方、做了什么、和别人是什么关系。不要提我还没读到的内容。`)
+                  }
+                />
+              )}
               {panel === "notes" && (
                 <NotesPanel
                   notes={highlights}
@@ -808,7 +874,11 @@ export function Reader({
                   onSave={(a) => void saveAnnotation(a)}
                   onDelete={(a) => void removeAnnotation(a)}
                   onExport={() => void exportNotes()}
-                  onAsk={() => onAskNotes(doc)}
+                  onAsk={() =>
+                    onAsk(
+                      `读一下我在《${doc.title}》里划的重点和写的笔记（用 list_notes 工具），帮我整理：按主题归类、提炼要点，再指出几处我可能没注意到的关联。`,
+                    )
+                  }
                 />
               )}
               {panel === "bookmarks" && (
@@ -890,12 +960,35 @@ export function Reader({
         <span className="num w-9 shrink-0 text-right">{percent}%</span>
       </footer>
 
+      {showQuick && (
+        <div
+          data-floating
+          className="absolute right-[84px] top-11 z-30 w-[190px] rounded-xl border border-hairline-strong bg-surface-2 p-1 shadow-[0_10px_32px_-8px_rgb(0_0_0/0.3)]"
+          role="menu"
+        >
+          {QUICK.map((q) => (
+            <button
+              key={q.name}
+              role="menuitem"
+              className="block w-full rounded-lg px-2.5 py-1.5 text-left text-[13px] text-text-2 hover:bg-nav-card hover:text-text"
+              onClick={() => {
+                setShowQuick(false);
+                onAsk(q.prompt);
+              }}
+            >
+              {q.name}
+            </button>
+          ))}
+        </div>
+      )}
+
       {showPrefs && <PrefsPopover prefs={prefs} fixed={fixed} onChange={updatePrefs} />}
 
       {popup && (
         <SelectionPopup
           state={popup}
           existing={popup.existing ? (annotations.find((a) => a.id === popup.existing) ?? null) : null}
+          figure={popup.existing ? null : lookup(figures, popup.text)}
           current={lastStyle}
           hostWidth={host.current?.clientWidth ?? 800}
           hostHeight={host.current?.clientHeight ?? 600}

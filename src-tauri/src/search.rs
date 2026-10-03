@@ -25,11 +25,45 @@ const MAX_DISTANCE: f64 = 1.26;
 /// 提问时等向量接口的时间上限：接口慢或挂了就只用全文那一路，不让用户干等
 const QUERY_TIMEOUT: Duration = Duration::from_secs(6);
 
+/// 防剧透的界线：这本书里，用户读到的位置之后的内容不拿出来
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Bound {
+    pub doc_id: String,
+    /// 读到第几页 / 第几节（PDF、EPUB）
+    pub page: Option<i64>,
+    /// 读到全书的几分之几（没有页码的格式用它）
+    pub fraction: f64,
+}
+
+impl Bound {
+    /// total：这本书一共多少个片段
+    fn allows(&self, hit: &SearchHit, total: i64) -> bool {
+        if hit.doc_id != self.doc_id {
+            return true;
+        }
+        match (hit.page, self.page) {
+            (Some(p), Some(limit)) => p <= limit,
+            _ => (hit.idx as f64) <= self.fraction * total as f64,
+        }
+    }
+}
+
 pub fn hybrid(
     conn: &Mutex<Connection>,
     query: &str,
     k: usize,
     doc_ids: Option<&[String]>,
+) -> Result<Vec<SearchHit>> {
+    hybrid_bounded(conn, query, k, doc_ids, None)
+}
+
+pub fn hybrid_bounded(
+    conn: &Mutex<Connection>,
+    query: &str,
+    k: usize,
+    doc_ids: Option<&[String]>,
+    bound: Option<&Bound>,
 ) -> Result<Vec<SearchHit>> {
     let lock = || conn.lock().map_err(|_| anyhow::anyhow!("数据库锁异常"));
     let query = crate::parse::normalize(query);
@@ -53,6 +87,16 @@ pub fn hybrid(
         },
         None => vec![],
     };
+    let (mut text_hits, mut vec_hits) = (text_hits, vec_hits);
+    if let Some(b) = bound {
+        let total: i64 = lock()?.query_row(
+            "SELECT COUNT(*) FROM chunks WHERE doc_id = ?1",
+            rusqlite::params![b.doc_id],
+            |r| r.get(0),
+        )?;
+        text_hits.retain(|h| b.allows(h, total));
+        vec_hits.retain(|h| b.allows(h, total));
+    }
     Ok(fuse(text_hits, vec_hits, k))
 }
 
@@ -192,6 +236,29 @@ mod tests {
             "embedBaseUrl": cfg.base_url, "embedApiKey": cfg.api_key, "embedModel": cfg.model,
         });
         db::set_setting(&conn.lock().unwrap(), "settings", &json.to_string()).unwrap();
+    }
+
+    #[test]
+    fn 防剧透_读到的位置之后的内容搜不出来() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = library();
+        let doc_id = db::list_documents(&conn.lock().unwrap()).unwrap()[0]
+            .id
+            .clone();
+        let bound = |fraction: f64| Bound {
+            doc_id: doc_id.clone(),
+            page: None,
+            fraction,
+        };
+        // 「违约金」在第三块（一共四块）。读到一半时搜不到，读到后面才有
+        let early = hybrid_bounded(&conn, "违约金", 3, None, Some(&bound(0.3))).unwrap();
+        assert!(early.is_empty(), "{early:?}");
+        let later = hybrid_bounded(&conn, "违约金", 3, None, Some(&bound(0.6))).unwrap();
+        assert!(later[0].text.contains("违约金"));
+        // 前面读过的照常能搜到
+        assert!(!hybrid_bounded(&conn, "预付款", 3, None, Some(&bound(0.3)))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

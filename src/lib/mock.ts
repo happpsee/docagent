@@ -59,6 +59,28 @@ const store: Record<string, unknown> = {
 
 const notes: Annotation[] = [];
 
+const xray = {
+  total: 3,
+  units: [
+    { unit: 0, page: 1, start: 0, end: 0.34, title: "雨夜来客", summary: "雨夜里一个年轻人带着一台旧胶片机来到老陈的修理店。老陈认出这台相机是自己三十年前卖出去的。",
+      entities: [
+        { name: "老陈", type: "人物", desc: "相机修理店的店主，三十年前卖出过这台相机", quote: "老陈把店门的卷帘拉到一半" },
+        { name: "年轻人", type: "人物", desc: "雨夜带着旧相机来修的客人", quote: "一个浑身湿透的年轻人挤了进来" },
+        { name: "小满", type: "人物", desc: "相机机身上刻着的受赠人名字", quote: "赠予小满，一九八七年秋" },
+      ] },
+    { unit: 1, page: 2, start: 0.34, end: 0.67, title: "一卷没洗的底片", summary: "相机里留着一卷没冲洗的胶片。年轻人说相机是刚过世的外婆留下的，老陈答应三天后交照片。",
+      entities: [
+        { name: "年轻人", type: "人物", desc: "相机是他外婆留下的，外婆上个月去世了", quote: "外婆上个月走了" },
+        { name: "底片", type: "物品", desc: "卷片轴里一卷没冲洗的胶片，要等三天", quote: "卷片轴里还留着一卷没冲洗的胶片" },
+      ] },
+    { unit: 2, page: 3, start: 0.67, end: 1, title: "桥头的槐树", summary: "照片洗出来只有七张成像，都是一座石桥。最后一张背面写着“等你到槐花开”，老陈明白了小满是谁。",
+      entities: [
+        { name: "小满", type: "人物", desc: "照片上穿蓝布衫的姑娘，老陈认识她", quote: "他终于知道小满是谁了" },
+        { name: "石桥", type: "地点", desc: "所有照片拍的同一个地方，桥头有棵槐树", quote: "一座石桥，桥头一棵槐树" },
+      ] },
+  ],
+};
+
 /** 预览里没有 Rust，用最简单的规则把示例 Markdown 排成书（正式环境是 Rust 的 render.rs） */
 function mdBook(md: string) {
   const toc: { label: string; href: string; subitems: never[] }[] = [];
@@ -91,6 +113,7 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
     return (await (await fetch(args?.docId === "d4" ? sampleEpub : samplePdf)).arrayBuffer()) as T;
   }
   if (cmd === "document_book") return mdBook(sampleMd) as T;
+  if (cmd === "xray_get") return (args?.docId === "d4" ? xray : { units: [], total: 0 }) as T;
   if (cmd === "list_annotations") return notes.filter((a) => !args?.docId || a.docId === args.docId) as T;
   if (cmd === "save_annotation") {
     const a = args?.annotation as Annotation;

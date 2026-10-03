@@ -4,7 +4,7 @@
 //!   DOCAGENT_TEST_KEY=sk-... cargo test --test e2e -- --ignored --nocapture
 //! 可选：DOCAGENT_TEST_BASE_URL / DOCAGENT_TEST_MODEL
 
-use docagent_lib::{chunk, db, parse, server};
+use docagent_lib::{agent, chunk, db, parse, server, xray};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -547,4 +547,83 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
     );
 
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// 透视：用真实模型把示例小说读一遍，检查要点和人物确实来自书里
+#[test]
+#[ignore]
+fn 透视_真实模型逐段提取要点和人物() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let epub = root.join("test-docs/示例小说.epub");
+    let tmp = std::env::temp_dir().join(format!("docagent-xray-{}.db", std::process::id()));
+    let mut conn = db::open(&tmp).unwrap();
+    let parsed = parse::extract(&epub).unwrap();
+    let (book_chunks, _, _) = chunks(&epub);
+    let id = db::import_document(
+        &mut conn,
+        &db::NewDoc {
+            title: "槐花开",
+            path: &epub.to_string_lossy(),
+            kind: parsed.kind,
+            pages: None,
+            author: None,
+            cover: None,
+        },
+        &book_chunks,
+    )
+    .unwrap();
+    let conn = Arc::new(Mutex::new(conn));
+    let provider: agent::Provider = serde_json::from_value(serde_json::json!({
+        "baseUrl": std::env::var("DOCAGENT_TEST_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com/anthropic".into()),
+        "apiKey": std::env::var("DOCAGENT_TEST_KEY").expect("需要 DOCAGENT_TEST_KEY"),
+        "model": std::env::var("DOCAGENT_TEST_MODEL").unwrap_or_else(|_| "deepseek-flash".into()),
+    }))
+    .unwrap();
+
+    let t = std::time::Instant::now();
+    let last = Mutex::new(None);
+    xray::build(&conn, &id, xray::completer(provider), |p| {
+        println!("  进度 {}/{} {:?}", p.done, p.total, p.error);
+        *last.lock().unwrap() = Some(p);
+    });
+    let p = last.into_inner().unwrap().unwrap();
+    assert!(p.finished && p.error.is_none(), "{p:?}");
+    let x = xray::get(&conn.lock().unwrap(), &id).unwrap();
+    println!("用时 {:?}，共 {} 段", t.elapsed(), x.total);
+    for u in &x.units {
+        println!("[{}] {} —— {}", u.unit, u.title, u.summary);
+        for e in &u.entities {
+            println!("    {}（{}）{} 「{}」", e.name, e.kind, e.desc, e.quote);
+        }
+    }
+    assert_eq!(x.units.len() as i64, x.total);
+    let names: Vec<&str> = x
+        .units
+        .iter()
+        .flat_map(|u| u.entities.iter().map(|e| e.name.as_str()))
+        .collect();
+    assert!(names.contains(&"老陈"), "应认出老陈：{names:?}");
+    assert!(names.contains(&"小满"), "应认出小满：{names:?}");
+    // 引的原文必须真是书里的字（界面要靠它跳回原文）
+    let full: String = book_chunks.iter().map(|c| c.text.as_str()).collect();
+    let norm = |s: &str| {
+        parse::normalize(s)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+    };
+    let full = norm(&full);
+    let quotes: Vec<&str> = x
+        .units
+        .iter()
+        .flat_map(|u| u.entities.iter().map(|e| e.quote.as_str()))
+        .filter(|q| !q.is_empty())
+        .collect();
+    let real = quotes.iter().filter(|q| full.contains(&norm(q))).count();
+    println!("引文 {} 条，其中 {} 条是书里的原文", quotes.len(), real);
+    assert!(
+        real * 10 >= quotes.len() * 8,
+        "引文大多数应是原文：{real}/{}",
+        quotes.len()
+    );
 }

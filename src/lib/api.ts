@@ -8,7 +8,7 @@ export const isPreview = !inTauri;
 const invoke = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
   inTauri ? tauriInvoke<T>(cmd, args) : mockInvoke<T>(cmd, args);
 
-import type { AgentEvent, Annotation, Block, Doc, DocKind, Hit, Message, Quote, Session } from "./types";
+import type { AgentEvent, Annotation, Block, Doc, DocKind, Hit, Message, Quote, Session, XRay } from "./types";
 
 export interface ImportProgress {
   name: string;
@@ -45,7 +45,7 @@ export async function listDocuments(): Promise<Doc[]> {
   const raw = await invoke<
     {
       id: string; title: string; path: string | null; kind: string; pages: number | null; chunk_count: number;
-      created_at: number; author?: string | null; has_cover?: boolean; progress?: number | null;
+      created_at: number; author?: string | null; has_cover?: boolean; progress?: number | null; read_at?: number | null;
     }[]
   >("list_documents");
   return raw.map((d) => ({
@@ -59,6 +59,7 @@ export async function listDocuments(): Promise<Doc[]> {
     author: d.author ?? null,
     hasCover: !!d.has_cover,
     progress: d.progress ?? null,
+    readAt: d.read_at ?? null,
   }));
 }
 
@@ -110,6 +111,22 @@ export const readingState = (docId: string) =>
   invoke<{ location: string | null; fraction: number } | null>("reading_state", { docId });
 export const saveReadingState = (docId: string, location: string, fraction: number) =>
   invoke<void>("save_reading_state", { docId, location, fraction });
+// ---------- 透视 ----------
+
+export const xrayGet = (docId: string) => invoke<XRay | null>("xray_get", { docId }).then((x) => x ?? { units: [], total: 0 });
+/** 开始（或接着）透视；在后台跑，进度走 onXRayProgress */
+export const xrayBuild = (docId: string) => invoke<void>("xray_build", { docId });
+export const xrayClear = (docId: string) => invoke<void>("xray_clear", { docId });
+export interface XRayProgress {
+  docId: string;
+  done: number;
+  total: number;
+  error: string | null;
+  finished: boolean;
+}
+export const onXRayProgress = (fn: (p: XRayProgress) => void): Promise<UnlistenFn> =>
+  inTauri ? listen<XRayProgress>("xray-progress", (e) => fn(e.payload)) : Promise.resolve(() => {});
+
 /** 导出文字：Rust 那边弹「另存为」再写，返回存到了哪（用户取消返回 null） */
 export const exportText = (defaultName: string, content: string) =>
   invoke<string | null>("export_text", { defaultName, content });

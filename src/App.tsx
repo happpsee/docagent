@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ChatPanel } from "./components/ChatPanel";
+import { Library } from "./components/Library";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
 import { Reader, type ReadTarget, type SelectionAction } from "./reader/Reader";
@@ -45,6 +46,8 @@ export function App() {
   const [notesVersion, setNotesVersion] = useState(0);
   const [vectorizing, setVectorizing] = useState<string | null>(null);
   const [readerCmd, setReaderCmd] = useState<ReaderCommand | null>(null);
+  /** 没在读书时主区域显示什么：书架（首页）还是对话 */
+  const [view, setView] = useState<"library" | "chat">("library");
 
   // 事件回调里要读最新值，用 ref 避免闭包拿到旧状态
   const askRef = useRef<{ id: string; session: Session; startedAt: number } | null>(null);
@@ -313,6 +316,7 @@ export function App() {
         setReaderCmd({ callId: "preview", action: "highlight", docId: book[1], quote: decodeURIComponent(hl[1]), note: "助手加的笔记" });
       }
       if (api.isPreview && location.search.includes("chat")) {
+        setView("chat");
         const list = await api.listSessions();
         if (list[0]) {
           const msgs = await api.getMessages(list[0].id);
@@ -410,6 +414,7 @@ export function App() {
     setCurrent(null);
     setMessages([]);
     setReading(null);
+    setView("chat");
   }
 
   async function openSession(s: Session) {
@@ -418,6 +423,7 @@ export function App() {
       setMessages(await api.getMessages(s.id));
       setCurrent(s);
       setReading(null);
+      setView("chat");
     } catch (err) {
       setError(String(err));
     }
@@ -439,6 +445,8 @@ export function App() {
     setReading(null);
     readingInfo.current = null;
     setCollapsed(false);
+    setView("library");
+    refreshDocs();
   }
 
   /** 阅读器做完了助手交代的事，回话 */
@@ -481,14 +489,10 @@ export function App() {
     );
   }
 
-  /** 让助手读这本书上的划线和笔记，帮忙归纳 */
-  function askNotes(d: Doc) {
+  /** 阅读器里的一键动作：就正在读的这本书问助手 */
+  function askAboutBook(d: Doc, prompt: string) {
     if (busy || agent !== "ready") return setError("助手还没准备好，稍后再试");
-    void send(
-      `读一下我在《${d.title}》里划的重点和写的笔记（用 list_notes 工具），帮我整理：按主题归类、提炼要点，再指出几处我可能没注意到的关联。`,
-      null,
-      [d.id],
-    );
+    void send(prompt, null, [d.id]);
   }
 
   /** 把助手对一段原文的回答记到那段话上：已有划线就追加到它的笔记里，没有就新建一条 */
@@ -580,6 +584,11 @@ export function App() {
           onOpenDoc={(d) => openDoc(d.id)}
           progress={importing ?? vectorizing}
           onImport={(paths) => void importPaths(paths)}
+          atLibrary={!readingDoc && view === "library"}
+          onOpenLibrary={() => {
+            if (reading) closeReader();
+            setView("library");
+          }}
         />
         {readingDoc && reading && (
           <Reader
@@ -592,12 +601,19 @@ export function App() {
             notesVersion={notesVersion}
             onClose={closeReader}
             onSelection={onSelection}
-            onAskNotes={askNotes}
+            onAsk={(prompt) => askAboutBook(readingDoc, prompt)}
             onDocsChanged={refreshDocs}
             onError={setError}
           />
         )}
-        <div className={readingDoc ? "flex w-[400px] shrink-0 border-l border-hairline" : "flex min-w-0 flex-1"}>
+        {!readingDoc && view === "library" && (
+          <Library docs={docs} progress={importing} onOpen={(d) => openDoc(d.id)} onImport={(paths) => void importPaths(paths)} />
+        )}
+        <div
+          className={
+            readingDoc ? "flex w-[400px] shrink-0 border-l border-hairline" : view === "library" ? "hidden" : "flex min-w-0 flex-1"
+          }
+        >
           <ChatPanel
             title={current?.title ?? null}
             compact={!!readingDoc}

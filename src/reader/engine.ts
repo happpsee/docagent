@@ -101,7 +101,7 @@ export async function openSource(doc: Doc, prefs: ReaderPrefs): Promise<unknown>
 // ---------- 样式 ----------
 
 export const THEMES: Record<ReaderPrefs["theme"], { name: string; bg: string; fg: string; link: string; dark: boolean }> = {
-  warm: { name: "暖白", bg: "#faf9f5", fg: "#2b2a27", link: "#b5532f", dark: false },
+  warm: { name: "白", bg: "#fdfdfc", fg: "#262624", link: "#b5532f", dark: false },
   paper: { name: "纸黄", bg: "#f3e9d2", fg: "#3d3222", link: "#9a4a22", dark: false },
   green: { name: "护眼", bg: "#dcebd9", fg: "#22321f", link: "#2f6b3c", dark: false },
   night: { name: "夜间", bg: "#1f1e1c", fg: "#cfcabd", link: "#e08a66", dark: true },

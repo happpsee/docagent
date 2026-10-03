@@ -3,6 +3,7 @@ import { BookOpenText, Copy, Highlighter, MessageSquareQuote, NotebookPen, Searc
 import type { Annotation, HighlightColor, HighlightStyle } from "@/lib/types";
 import { HL } from "./engine";
 import type { SelectionAction } from "./Reader";
+import { FigureCard, type Figure } from "./XRay";
 
 export interface PopupState {
   /** 相对阅读器的位置：选区最后一行底部的中点，以及选区顶部 */
@@ -26,6 +27,8 @@ const STYLES: { id: HighlightStyle; name: string; icon: typeof Highlighter }[] =
 export function SelectionPopup(p: {
   state: PopupState;
   existing: Annotation | null;
+  /** 选中的是透视里已知的人物或概念 */
+  figure?: Figure | null;
   current: { color: HighlightColor; style: HighlightStyle };
   hostWidth: number;
   hostHeight: number;
@@ -44,7 +47,7 @@ export function SelectionPopup(p: {
   const color = p.existing?.color ?? null;
   const style = p.existing?.style ?? p.current.style;
   const width = 300;
-  const height = noting ? 190 : 84;
+  const height = (noting ? 190 : 84) + (p.figure ? 92 : 0);
   // 下面放不下就翻到选区上面
   const below = p.state.y + 10 + height < p.hostHeight;
   const left = Math.min(Math.max(p.state.x, width / 2 + 8), p.hostWidth - width / 2 - 8);
@@ -60,6 +63,7 @@ export function SelectionPopup(p: {
       style={{ left, top, width }}
       onPointerDown={(e) => e.stopPropagation()}
     >
+      {p.figure && <FigureCard figure={p.figure} />}
       <div className="flex items-center gap-1">
         {(Object.keys(HL) as HighlightColor[]).map((c) => (
           <button

@@ -14,11 +14,13 @@ pub mod db;
 pub mod ebook;
 pub mod embed;
 pub mod fts;
+pub mod llm;
 pub mod markup;
 pub mod parse;
 pub mod render;
 pub mod search;
 pub mod server;
+pub mod xray;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -70,6 +72,9 @@ pub fn run() {
             commands::delete_document,
             commands::reset_index,
             commands::fill_vectors,
+            commands::xray_get,
+            commands::xray_build,
+            commands::xray_clear,
             commands::read_file_bytes,
             commands::document_book,
             commands::doc_cover,

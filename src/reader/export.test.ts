@@ -5,7 +5,7 @@ import type { Annotation, Doc } from "@/lib/types";
 
 const doc: Doc = {
   id: "d", title: "槐花开.epub", path: "/x.epub", kind: "epub", pages: null, chunkCount: 1, createdAt: 0,
-  author: "某人", hasCover: false, progress: null,
+  author: "某人", hasCover: false, progress: null, readAt: null,
 };
 const note = (patch: Partial<Annotation>): Annotation => ({
   id: "a", docId: "d", kind: "highlight", cfi: "epubcfi(/6/2)", text: "原文", note: "", color: "yellow",

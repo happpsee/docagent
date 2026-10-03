@@ -661,33 +661,34 @@ button:not(:disabled):not([data-no-press]),
 }
 
 /* ============================================================
-   DocAgent 暖色主题：覆盖上面的冷调 token。
-   纸感的米白底、暖灰描边、赤陶色强调，标题用衬线体。
+   DocAgent 主题：覆盖上面的冷调 token。
+   底色接近纯白，只带一点点几乎看不出来的暖（太黄会显得旧），描边是中性灰，
+   赤陶色只用在强调上，标题用衬线体。
    只改 token 的值，组件和工具类不动。
    ============================================================ */
 :root {
-    --color-bg: #faf9f5;
-    --color-bg-grad-a: #faf9f5;
-    --color-bg-grad-b: #f3f1ea;
+    --color-bg: #fdfdfc;
+    --color-bg-grad-a: #fdfdfc;
+    --color-bg-grad-b: #f6f6f4;
     --color-surface-2: #ffffff;
-    --color-sidebar-surface: #f3f1ea;
+    --color-sidebar-surface: #f6f6f4;
     --color-glass-from: #fffffff2;
-    --color-glass-to: #fbfaf6f2;
+    --color-glass-to: #fcfcfbf2;
 
     --color-nav-card: #1f1e1d0a;
     --color-nav-card-hover: #1f1e1d10;
     --color-nav-card-active: #1f1e1d14;
-    --color-segment-bg: #efede4;
+    --color-segment-bg: #f1f1ee;
     --color-track-idle: #1f1e1d1f;
 
-    --color-hairline: #e6e3d8;
-    --color-hairline-strong: #d6d2c4;
-    --color-hairline-soft: #ece9df;
+    --color-hairline: #e9e9e5;
+    --color-hairline-strong: #dadad5;
+    --color-hairline-soft: #efefec;
 
-    --color-text: #2b2a27;
-    --color-text-2: #55524a;
-    --color-text-3: #7a766b;
-    --color-text-4: #a39f92;
+    --color-text: #262624;
+    --color-text-2: #53524e;
+    --color-text-3: #7b7a75;
+    --color-text-4: #a5a49f;
 
     --color-accent: #c96442;
     --color-accent-2: #b5573a;

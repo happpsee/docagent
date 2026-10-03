@@ -392,6 +392,46 @@ pub async fn export_text(
     Ok(Some(path.to_string_lossy().to_string()))
 }
 
+// ---------- 透视 ----------
+
+#[tauri::command(async)]
+pub fn xray_get(state: State<'_, AppState>, doc_id: String) -> Result<crate::xray::XRay, String> {
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    crate::xray::get(&conn, &doc_id).map_err(e)
+}
+
+/// 开始（或接着）透视一本书。在后台跑，进度通过 xray-progress 事件推给界面
+#[tauri::command(async)]
+pub fn xray_build(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    doc_id: String,
+) -> Result<(), String> {
+    let provider: Provider = {
+        let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+        db::get_setting(&conn, SETTINGS_KEY)
+            .map_err(e)?
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
+    };
+    if provider.api_key.is_empty() || provider.base_url.is_empty() || provider.model.is_empty() {
+        return Err("还没配置模型：请在设置里填接口地址、API Key 和模型名".to_string());
+    }
+    let conn = state.conn.clone();
+    std::thread::spawn(move || {
+        crate::xray::build(&conn, &doc_id, crate::xray::completer(provider), |p| {
+            let _ = app.emit("xray-progress", p);
+        });
+    });
+    Ok(())
+}
+
+#[tauri::command(async)]
+pub fn xray_clear(state: State<'_, AppState>, doc_id: String) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    crate::xray::clear(&conn, &doc_id).map_err(e)
+}
+
 // ---------- 设置 ----------
 
 #[tauri::command(async)]
