@@ -114,13 +114,27 @@ export async function getMessages(sessionId: string): Promise<Message[]> {
   });
 }
 
+// ---------- 扩展配置 ----------
+
+/** 确保 .docagent 目录存在并返回路径；不传 dir 是用户级 */
+export const ensureConfigDir = (dir?: string | null) => invoke<string>("ensure_config_dir", { dir: dir ?? null });
+export const openPath = (path: string) => invoke<void>("open_path", { path });
+
 // ---------- agent ----------
 
 export const agentStart = () => invoke<void>("agent_start");
-export const agentSend = (payload: Record<string, unknown>) => invoke<void>("agent_send", { payload });
+export const agentSend = (payload: Record<string, unknown>) =>
+  inTauri ? invoke<void>("agent_send", { payload }) : Promise.resolve();
 export const onAgentEvent = (fn: (e: AgentEvent) => void): Promise<UnlistenFn> => {
   if (!inTauri) {
-    setTimeout(() => fn({ type: "ready" }), 100);
+    setTimeout(() => {
+      fn({ type: "ready" });
+      fn({
+        type: "extensions",
+        user: { dir: "~/.docagent", skills: ["写周报", "剧本拆解"], mcp: ["github"] },
+        project: { dir: "awemesome/.docagent", skills: ["接口文档"], mcp: [] },
+      });
+    }, 100);
     return Promise.resolve(() => {});
   }
   return listen<AgentEvent>("agent-event", (e) => fn(e.payload));

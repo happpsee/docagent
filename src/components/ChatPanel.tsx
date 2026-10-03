@@ -24,6 +24,9 @@ interface Props {
   quote: Quote | null;
   onClearQuote: () => void;
   onOpenQuote: (q: Quote) => void;
+  workspace: string | null;
+  onPickWorkspace: () => void;
+  onClearWorkspace: () => void;
 }
 
 const SUGGESTIONS = ["这些资料主要讲了什么？", "帮我看看某个项目的代码结构", "把要点整理成一份文档"];
@@ -57,6 +60,9 @@ export function ChatPanel(p: Props) {
       autoFocus
       quote={p.quote}
       onClearQuote={p.onClearQuote}
+      workspace={p.workspace}
+      onPickWorkspace={p.onPickWorkspace}
+      onClearWorkspace={p.onClearWorkspace}
     />
   );
 

@@ -73,6 +73,8 @@ pub fn run() {
             commands::get_messages,
             commands::agent_start,
             commands::agent_send,
+            commands::ensure_config_dir,
+            commands::open_path,
         ])
         .run(tauri::generate_context!())
         .expect("启动失败");

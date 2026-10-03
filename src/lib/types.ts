@@ -69,6 +69,19 @@ export interface Settings {
   apiKey: string;
   model: string;
   topK: number;
+  /** 工作文件夹：助手在这里干活，并加载这里的 .docagent 配置 */
+  workspace: string | null;
+}
+
+/** 一个 .docagent 目录里发现的扩展 */
+export interface ExtensionSet {
+  dir: string;
+  skills: string[];
+  mcp: string[];
+}
+export interface Extensions {
+  user: ExtensionSet;
+  project: ExtensionSet | null;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -76,11 +89,13 @@ export const DEFAULT_SETTINGS: Settings = {
   apiKey: "",
   model: "deepseek-flash",
   topK: 6,
+  workspace: null,
 };
 
 /** sidecar 发来的事件（协议定义见 sidecar/agent.ts 顶部） */
 export type AgentEvent =
   | { type: "ready" }
+  | ({ type: "extensions" } & Extensions)
   | { type: "exited" }
   | { type: "session"; id: string; sessionId: string }
   | { type: "delta"; id: string; text: string }

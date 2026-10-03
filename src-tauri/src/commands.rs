@@ -312,3 +312,77 @@ pub fn agent_send(state: State<'_, AppState>, payload: serde_json::Value) -> Res
         None => Err("agent 没有启动：请先在设置里配置模型".to_string()),
     }
 }
+
+// ---------- 扩展配置（技能、MCP） ----------
+
+const CONFIG_README: &str = r#"# DocAgent 配置目录
+
+这里放技能和 MCP 服务的配置。用户目录下的（~/.docagent）对所有对话生效；
+工作文件夹里的（<文件夹>/.docagent）只在选了那个文件夹时生效，同名时覆盖用户级。
+
+## 技能
+
+每个技能一个文件夹，里面放一份 SKILL.md：
+
+    skills/
+      写周报/
+        SKILL.md
+
+SKILL.md 的开头写清楚它叫什么、什么时候用，下面写具体做法：
+
+    ---
+    name: 写周报
+    description: 用户要写周报、周总结时使用
+    ---
+
+    1. 先问清楚这周做了哪几件事
+    2. 按「完成 / 进行中 / 下周计划」三段写
+    3. 每条不超过两行
+
+## MCP 服务
+
+mcp.json 里写要连接的 MCP 服务：
+
+    {
+      "mcpServers": {
+        "名字": { "command": "npx", "args": ["-y", "某个-mcp-server"] },
+        "远程的": { "type": "http", "url": "https://example.com/mcp" }
+      }
+    }
+
+改完后开一个新对话生效。助手第一次用某个服务的工具时会先问你。
+"#;
+
+/// 确保配置目录存在（没有就建好骨架），返回它的路径。
+/// dir 为空表示用户级（~/.docagent），否则是 <dir>/.docagent。
+#[tauri::command]
+pub fn ensure_config_dir(app: AppHandle, dir: Option<String>) -> Result<String, String> {
+    let base = match dir {
+        Some(d) if !d.is_empty() => PathBuf::from(d),
+        _ => app.path().home_dir().map_err(|e| e.to_string())?,
+    };
+    let root = base.join(".docagent");
+    std::fs::create_dir_all(root.join("skills")).map_err(|e| e.to_string())?;
+    let mcp = root.join("mcp.json");
+    if !mcp.exists() {
+        std::fs::write(&mcp, "{\n  \"mcpServers\": {}\n}\n").map_err(|e| e.to_string())?;
+    }
+    let readme = root.join("README.md");
+    if !readme.exists() {
+        std::fs::write(&readme, CONFIG_README).map_err(|e| e.to_string())?;
+    }
+    Ok(root.to_string_lossy().to_string())
+}
+
+/// 在访达里打开一个文件夹
+#[tauri::command]
+pub fn open_path(path: String) -> Result<(), String> {
+    if !Path::new(&path).exists() {
+        return Err(format!("路径不存在：{path}"));
+    }
+    std::process::Command::new("open")
+        .arg(&path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("打不开 {path}：{e}"))
+}

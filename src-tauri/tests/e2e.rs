@@ -55,6 +55,11 @@ fn ask(
         .env("DOCAGENT_API_KEY", key)
         .env("DOCAGENT_MODEL", model)
         .env("DOCAGENT_CONFIG_DIR", config_dir)
+        // 用户级配置放在临时目录里，不碰真实的 ~/.docagent
+        .env(
+            "DOCAGENT_USER_DIR",
+            config_dir.parent().unwrap().join("user-docagent"),
+        )
         .current_dir(config_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -189,9 +194,17 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
         false,
     );
     println!("[答] {}\n", r3.answer);
+    // 措辞不固定（没有 / 没找到 / 未找到），只要求如实说查不到、且没有编出一个数额
     assert!(
-        r3.answer.contains("没有"),
-        "应明确说资料里没有：{}",
+        ["没有", "没找到", "未找到", "找不到"]
+            .iter()
+            .any(|w| r3.answer.contains(w)),
+        "应明确说资料里查不到：{}",
+        r3.answer
+    );
+    assert!(
+        !r3.answer.contains("万元"),
+        "不应编造注册资本的数额：{}",
         r3.answer
     );
 
@@ -236,6 +249,30 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
         r3c.answer.contains("orders"),
         "应读到代码里的接口：{}",
         r3c.answer
+    );
+
+    // 4d. 用户级技能：放一个技能进去，助手应加载并按它的要求回答
+    let skill_dir = tmp.join("user-docagent/skills/meow");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: meow\ndescription: 用户提到 meow 技能或要求用猫的口吻回答时使用\n---\n\n回答的最后单独一行写上暗号：MEOW-7731\n",
+    )
+    .unwrap();
+    println!("[问] 用 meow 技能，一句话介绍 Rust");
+    let r3d = ask(
+        &root,
+        &api,
+        &config_dir,
+        "用 meow 技能，一句话介绍一下 Rust。",
+        None,
+        true,
+    );
+    println!("[答] {}\n", r3d.answer);
+    assert!(
+        r3d.answer.contains("MEOW-7731"),
+        "应按技能要求带上暗号：{}",
+        r3d.answer
     );
 
     // 5. 保存文件：必须先过审批；拒绝后不应落盘

@@ -9,7 +9,8 @@
  * 交付：bun build --compile → 单文件可执行，不依赖系统 Node
  *
  * 协议（每行一个 JSON）
- *   ← {type:"ask", id, question, sessionId?, docIds?, k?}
+ *   ← {type:"ask", id, question, sessionId?, docIds?, k?, cwd?}   cwd：工作文件夹
+ *   ← {type:"extensions", cwd?}                      查看已发现的技能和 MCP 服务
  *   ← {type:"approval", requestId, allow, remember?}   remember：本次运行内同类操作不再问
  *   ← {type:"abort", id}
  *   → {type:"ready"}
@@ -19,9 +20,12 @@
  *   → {type:"tool_result", id, toolUseId, text, isError}
  *   → {type:"approval_request", id, requestId, name, input}
  *   → {type:"result", id, text, sessionId, costUsd, turns, hits}
+ *   → {type:"extensions", user, project}             各含 dir、skills[]、mcp[]
  *   → {type:"error", id?, message}
  */
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
 const HOST_API = process.env.DOCAGENT_API ?? "";
@@ -37,6 +41,7 @@ function agentEnv(): Record<string, string> {
     if (k.startsWith("CLAUDE_CODE_") || k.startsWith("ANTHROPIC_") || k.startsWith("DOCAGENT_")) continue;
     env[k] = v;
   }
+  env.PATH = loginPath();
   if (process.env.DOCAGENT_BASE_URL) env.ANTHROPIC_BASE_URL = process.env.DOCAGENT_BASE_URL;
   if (process.env.DOCAGENT_API_KEY) env.ANTHROPIC_AUTH_TOKEN = process.env.DOCAGENT_API_KEY;
   if (process.env.DOCAGENT_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = process.env.DOCAGENT_CONFIG_DIR;
@@ -48,6 +53,77 @@ function agentEnv(): Record<string, string> {
     env.ANTHROPIC_DEFAULT_OPUS_MODEL = MODEL;
   }
   return env;
+}
+
+/** 用户级配置目录。应用自己的名字，不读也不写 ~/.claude */
+const USER_DIR = process.env.DOCAGENT_USER_DIR ?? `${process.env.HOME ?? ""}/.docagent`;
+const CONFIG_DIR = process.env.DOCAGENT_CONFIG_DIR ?? "";
+
+/** 图形界面启动的程序拿不到终端里的 PATH（找不到 node、npx、uvx、git…），
+ *  这里向用户的登录 shell 问一次，Bash 工具和 MCP 服务都要用。 */
+let cachedPath: string | null = null;
+function loginPath(): string {
+  if (cachedPath != null) return cachedPath;
+  cachedPath = process.env.PATH ?? "";
+  try {
+    const shell = process.env.SHELL || "/bin/zsh";
+    const r = Bun.spawnSync([shell, "-ilc", 'printf "__P__%s__P__" "$PATH"'], { stdout: "pipe", stderr: "ignore" });
+    const m = /__P__(.*)__P__/s.exec(new TextDecoder().decode(r.stdout));
+    if (m?.[1]) cachedPath = m[1];
+  } catch {
+    // 问不到就用现有的
+  }
+  return cachedPath;
+}
+
+type McpMap = Record<string, Record<string, unknown>>;
+
+/** 读 <dir>/mcp.json。两种写法都认：{ "mcpServers": {...} } 或者直接 { 名字: 配置 } */
+function readMcp(dir: string): McpMap {
+  try {
+    const raw = JSON.parse(readFileSync(`${dir}/mcp.json`, "utf8"));
+    const map = (raw?.mcpServers ?? raw) as McpMap;
+    return map && typeof map === "object" ? map : {};
+  } catch {
+    return {};
+  }
+}
+
+function listSkills(dir: string): string[] {
+  try {
+    return readdirSync(`${dir}/skills`, { withFileTypes: true })
+      .filter((d) => (d.isDirectory() || d.isSymbolicLink()) && existsSync(`${dir}/skills/${d.name}/SKILL.md`))
+      .map((d) => d.name);
+  } catch {
+    return [];
+  }
+}
+
+/** 把一个 .docagent 目录包装成 SDK 能加载的本地插件。
+ *  包装目录放在应用自己的数据目录里，只是一个清单文件加一个指向 skills 的软链接，
+ *  用户的 .docagent 里不需要出现任何 SDK 专用的文件。 */
+function pluginFor(kind: "user" | "project", dir: string): { type: "local"; path: string; skipMcpDiscovery: true } | null {
+  if (!CONFIG_DIR || !listSkills(dir).length) return null;
+  const id = kind === "user" ? "user" : `project-${createHash("sha1").update(dir).digest("hex").slice(0, 10)}`;
+  const root = `${CONFIG_DIR}/plugins/${id}`;
+  try {
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(`${root}/.claude-plugin`, { recursive: true });
+    writeFileSync(
+      `${root}/.claude-plugin/plugin.json`,
+      JSON.stringify({ name: kind === "user" ? "user" : "folder", version: "1.0.0", description: `DocAgent ${kind} skills` }),
+    );
+    symlinkSync(`${dir}/skills`, `${root}/skills`);
+    return { type: "local", path: root, skipMcpDiscovery: true };
+  } catch (err) {
+    process.stderr.write(`加载技能失败 ${dir}: ${String(err)}\n`);
+    return null;
+  }
+}
+
+function describeExtensions(cwd?: string) {
+  const info = (dir: string) => ({ dir, skills: listSkills(dir), mcp: Object.keys(readMcp(dir)) });
+  return { user: info(USER_DIR), project: cwd ? info(`${cwd}/.docagent`) : null };
 }
 
 interface Hit {
@@ -145,8 +221,10 @@ async function gate(tool: string, input: Record<string, unknown>): Promise<{ all
     case "Skill":
       return { allow: true };
     default: {
-      // 没单独定规则的工具：问用户，而不是直接拒绝
-      const key = `tool:${tool}`;
+      // 没单独定规则的工具：问用户，而不是直接拒绝。
+      // 外部 MCP 的工具按「服务」记住——同一个服务放行一次，它的其它工具不再问
+      const mcp = /^mcp__(.+?)__/.exec(tool);
+      const key = mcp ? `mcp:${mcp[1]}` : `tool:${tool}`;
       if (granted.has(key)) return { allow: true };
       const ok = await requestApproval(tool, input, key);
       return ok ? { allow: true } : { allow: false, reason: "用户没有允许使用这个工具" };
@@ -245,6 +323,7 @@ const RULES = `你运行在一个叫 DocAgent 的桌面应用里，是用户的�
 - 用户让你了解某个项目或目录时，直接去看（Bash 里用 ls / rg / find，或用 Read 读文件），不要说自己做不到。
 - 需要最新信息或文档库、本地都没有的资料时，用 WebSearch 联网搜索，用 WebFetch 打开具体网页；引用网页内容时给出链接。
 - 任务大、可以拆开并行时，可以用 Task 派子代理去做。
+- 用户配置了技能（Skill）时，遇到匹配的任务先用对应的技能。
 - 读取、写入、运行命令、联网会由应用向用户请求许可；被拒绝就换个办法或者如实说明，不要反复重试同一个操作。
 - 要交付文件时：用户指定了位置就用 Write 写到那里；没指定就用 save_note。
 - 用中文回答，简洁，适当使用 Markdown。`;
@@ -255,8 +334,19 @@ async function handleAsk(msg: {
   sessionId?: string;
   docIds?: string[];
   k?: number;
+  cwd?: string;
 }) {
   const { id, question, sessionId, docIds, k } = msg;
+  const cwd = msg.cwd && existsSync(msg.cwd) ? msg.cwd : HOME;
+  const projectDir = msg.cwd ? `${cwd}/.docagent` : null;
+  // 用户自己选的工作文件夹：读取不用再问（写入和跑命令仍然要问）
+  if (msg.cwd) granted.add(`read:${cwd}`);
+  const plugins = [pluginFor("user", USER_DIR), projectDir ? pluginFor("project", projectDir) : null].filter(
+    (x): x is NonNullable<typeof x> => !!x,
+  );
+  // 文件夹级的 MCP 配置覆盖用户级同名项；内置的文档库工具始终存在
+  const externalMcp = { ...readMcp(USER_DIR), ...(projectDir ? readMcp(projectDir) : {}) };
+  delete (externalMcp as McpMap).docagent;
   asks.set(id, { docIds, k, hits: [] });
   currentAskId = id;
   const ac = new AbortController();
@@ -270,8 +360,9 @@ async function handleAsk(msg: {
       options: {
         // 用 Claude Code 自带的系统提示（它知道怎么用好这些工具），后面追加本应用的规则
         systemPrompt: { type: "preset", preset: "claude_code", append: RULES },
-        cwd: HOME,
-        mcpServers: { docagent: docTools },
+        cwd,
+        mcpServers: { ...(externalMcp as Record<string, any>), docagent: docTools },
+        ...(plugins.length ? { plugins } : {}),
         // SDK 的全套内置工具（和 Claude Code 一样）：读写改文件、Bash、联网搜索、
         // 抓网页、子代理、Notebook、Skill 等。能不能用由 gate 决定，不在这里删减。
         tools: { type: "preset", preset: "claude_code" },
@@ -389,6 +480,7 @@ async function main() {
       continue;
     }
     if (msg.type === "ask") void handleAsk(msg);
+    else if (msg.type === "extensions") send({ type: "extensions", ...describeExtensions(msg.cwd) });
     else if (msg.type === "approval") {
       pendingApprovals.get(msg.requestId)?.({ allow: !!msg.allow, remember: !!msg.remember });
       pendingApprovals.delete(msg.requestId);

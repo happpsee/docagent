@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ChatPanel } from "./components/ChatPanel";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
@@ -9,6 +10,7 @@ import {
   type AgentEvent,
   type Block,
   type Doc,
+  type Extensions,
   type Hit,
   type Message,
   type Quote,
@@ -35,12 +37,15 @@ export function App() {
   const [quote, setQuote] = useState<Quote | null>(null);
   const [importing, setImporting] = useState<string | null>(null);
   const [dropHover, setDropHover] = useState(false);
+  const [extensions, setExtensions] = useState<Extensions | null>(null);
   const [showSettings, setShowSettings] = useState(false);
 
   // 事件回调里要读最新值，用 ref 避免闭包拿到旧状态
   const askRef = useRef<{ id: string; session: Session; startedAt: number } | null>(null);
   const messagesRef = useRef<Message[]>([]);
   messagesRef.current = messages;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   const refreshDocs = useCallback(() => {
     api.listDocuments().then(setDocs, (e) => setError(String(e)));
@@ -96,7 +101,11 @@ export function App() {
 
   const onEvent = useCallback(
     (e: AgentEvent) => {
-      if (e.type === "ready") return setAgent("ready");
+      if (e.type === "ready") {
+        void api.agentSend({ type: "extensions", cwd: settingsRef.current.workspace ?? undefined });
+        return setAgent("ready");
+      }
+      if (e.type === "extensions") return setExtensions({ user: e.user, project: e.project });
       if (e.type === "exited") return setAgent((s) => (s === "starting" ? s : "down"));
       const ask = askRef.current;
       if (!ask || !("id" in e) || e.id !== ask.id) {
@@ -293,6 +302,7 @@ export function App() {
         sessionId: session.sdkSessionId ?? undefined,
         docIds: selected.size ? [...selected] : undefined,
         k: settings.topK,
+        cwd: settings.workspace ?? undefined,
       });
       refreshSessions();
     } catch (err) {
@@ -344,6 +354,22 @@ export function App() {
   function closeReader() {
     setReading(null);
     setCollapsed(false);
+  }
+
+  /** 换工作文件夹：只存设置，不用重启助手（每次提问都会带上） */
+  async function setWorkspace(workspace: string | null) {
+    const next = { ...settings, workspace };
+    setSettings(next);
+    try {
+      await api.setSetting(SETTINGS_KEY, JSON.stringify(next));
+      if (agent === "ready") await api.agentSend({ type: "extensions", cwd: workspace ?? undefined });
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+  async function pickWorkspace() {
+    const dir = await openDialog({ directory: true, multiple: false, title: "选择工作文件夹" });
+    if (typeof dir === "string") await setWorkspace(dir);
   }
 
   /** 阅读器里划词后的三个动作 */
@@ -441,6 +467,9 @@ export function App() {
             quote={quote}
             onClearQuote={() => setQuote(null)}
             onOpenQuote={(q) => openDoc(q.docId, q.page, q.text)}
+            workspace={settings.workspace}
+            onPickWorkspace={() => void pickWorkspace()}
+            onClearWorkspace={() => void setWorkspace(null)}
           />
         </div>
       </main>
@@ -457,6 +486,7 @@ export function App() {
           onSave={saveSettings}
           onClose={() => setShowSettings(false)}
           onDocsChanged={refreshDocs}
+          extensions={extensions}
         />
       )}
     </div>

@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import * as api from "@/lib/api";
-import type { Settings } from "@/lib/types";
+import type { ExtensionSet, Extensions, Settings } from "@/lib/types";
 import { GlassModal } from "./ui/GlassModal";
 import { ModalCloseButton } from "./ui/ModalCloseButton";
 import { PrimaryButton } from "./ui/PrimaryButton";
@@ -11,16 +11,26 @@ interface Props {
   onSave: (s: Settings) => Promise<void>;
   onClose: () => void;
   onDocsChanged: () => void;
+  extensions: Extensions | null;
 }
 
 const inputCls =
   "mt-1 w-full rounded-md border border-hairline bg-bg px-3 py-2 text-[13px] text-text outline-none focus:border-accent";
 
-export function SettingsModal({ settings, onSave, onClose, onDocsChanged }: Props) {
+export function SettingsModal({ settings, onSave, onClose, onDocsChanged, extensions }: Props) {
   const titleId = useId();
   const [s, setS] = useState(settings);
   const [info, setInfo] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  /** 打开配置目录（没有就先建好骨架和说明） */
+  async function openConfig(dir: string | null) {
+    try {
+      await api.openPath(await api.ensureConfigDir(dir));
+    } catch (err) {
+      setInfo(String(err));
+    }
+  }
 
   async function showInfo() {
     const i = await api.dbInfo();
@@ -73,6 +83,24 @@ export function SettingsModal({ settings, onSave, onClose, onDocsChanged }: Prop
           </label>
         </div>
 
+        <div>
+          <div className="mb-1.5 text-text-2">技能与 MCP 服务</div>
+          <div className="space-y-2">
+            <ExtRow title="用户级" hint="对所有对话生效" set={extensions?.user ?? null} onOpen={() => openConfig(null)} />
+            {settings.workspace ? (
+              <ExtRow
+                title="文件夹级"
+                hint={settings.workspace.split("/").pop() ?? ""}
+                set={extensions?.project ?? null}
+                onOpen={() => openConfig(settings.workspace)}
+              />
+            ) : (
+              <p className="text-text-4">选了工作文件夹后，那个文件夹里的 .docagent 也会被加载。</p>
+            )}
+          </div>
+          <p className="mt-1.5 text-text-4">改完配置后开一个新对话生效。</p>
+        </div>
+
         {info && <pre className="num whitespace-pre-wrap break-all rounded-md bg-bg p-3 text-[11px] text-text-3">{info}</pre>}
       </div>
 
@@ -109,5 +137,41 @@ export function SettingsModal({ settings, onSave, onClose, onDocsChanged }: Prop
         </PrimaryButton>
       </div>
     </GlassModal>
+  );
+}
+
+function ExtRow({
+  title,
+  hint,
+  set,
+  onOpen,
+}: {
+  title: string;
+  hint: string;
+  set: ExtensionSet | null;
+  onOpen: () => void;
+}) {
+  const items = set ? [...set.skills.map((n) => `技能 · ${n}`), ...set.mcp.map((n) => `MCP · ${n}`)] : [];
+  return (
+    <div className="rounded-lg border border-hairline px-3 py-2">
+      <div className="flex items-center gap-2">
+        <span className="text-[12px] font-medium text-text">{title}</span>
+        <span className="min-w-0 flex-1 truncate text-text-4">{hint}</span>
+        <button className="text-accent hover:underline" onClick={onOpen}>
+          打开文件夹
+        </button>
+      </div>
+      {items.length ? (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {items.map((t) => (
+            <span key={t} className="rounded-full bg-segment-bg px-2 py-0.5 text-[11px] text-text-2">
+              {t}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-1 text-text-4">还没有技能或 MCP 服务</div>
+      )}
+    </div>
   );
 }

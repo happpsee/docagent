@@ -366,17 +366,83 @@ pub fn add_document_text(
     add_document(conn, title, path, kind, pages, &with_vec)
 }
 
-/// 文本检索：算查询向量 → KNN → 丢掉距离过大的（等于没命中）
+/// 文本检索：向量和关键词两路合并。
+///
+/// 只靠哈希向量时，「合同」「甲方」这种短查询的相似度天然很低，会被没命中的阈值
+/// 整个滤掉（端到端测试里出现过：文档里明明有，却什么都搜不到）。所以再加一路
+/// 字面匹配：查询按空白拆成词，片段里包含的词越多越靠前。
 pub fn search_text(
     conn: &Connection,
     query: &str,
     k: usize,
     doc_ids: Option<&[String]>,
 ) -> Result<Vec<SearchHit>> {
-    let v = crate::embed::hash_embed(query);
-    let mut hits = search(conn, &v, k, doc_ids)?;
-    hits.retain(|h| h.distance < crate::embed::NO_MATCH_DISTANCE);
-    Ok(hits)
+    let query = crate::parse::normalize(query);
+    let v = crate::embed::hash_embed(&query);
+    let mut vector = search(conn, &v, k, doc_ids)?;
+    vector.retain(|h| h.distance < crate::embed::NO_MATCH_DISTANCE);
+
+    let mut out = keyword_search(conn, &query, k, doc_ids)?;
+    for h in vector {
+        if !out.iter().any(|x| x.chunk_id == h.chunk_id) {
+            out.push(h);
+        }
+    }
+    out.truncate(k);
+    Ok(out)
+}
+
+/// 字面匹配。命中全部词的排最前；距离字段给一个固定值，表示「字面命中」
+fn keyword_search(
+    conn: &Connection,
+    query: &str,
+    k: usize,
+    doc_ids: Option<&[String]>,
+) -> Result<Vec<SearchHit>> {
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .map(|t| {
+            t.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|t| t.chars().count() >= 2)
+        .take(6)
+        .collect();
+    if terms.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.doc_id, c.idx, c.page, c.text, d.title
+         FROM chunks c JOIN docs d ON d.id = c.doc_id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(SearchHit {
+            chunk_id: r.get(0)?,
+            doc_id: r.get(1)?,
+            idx: r.get(2)?,
+            page: r.get(3)?,
+            text: r.get(4)?,
+            doc_title: r.get(5)?,
+            distance: 1.0,
+        })
+    })?;
+    let mut scored: Vec<(usize, SearchHit)> = Vec::new();
+    for row in rows {
+        let hit = row?;
+        if let Some(ids) = doc_ids {
+            if !ids.is_empty() && !ids.iter().any(|i| i == &hit.doc_id) {
+                continue;
+            }
+        }
+        let lower = hit.text.to_lowercase();
+        let matched = terms.iter().filter(|t| lower.contains(t.as_str())).count();
+        if matched > 0 {
+            scored.push((matched, hit));
+        }
+    }
+    // 命中词多的在前；同分按文档里的顺序
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.chunk_id.cmp(&b.1.chunk_id)));
+    Ok(scored.into_iter().take(k).map(|(_, h)| h).collect())
 }
 
 /// 同一路径重复导入时，先把旧的那份删掉（文件改过后重新导入就是更新）
@@ -613,6 +679,49 @@ mod tests {
         // 完全无关的问题应被距离阈值滤掉
         let hits = search_text(&conn, "推荐一首适合跑步听的歌", 3, None).unwrap();
         assert!(hits.is_empty(), "无关问题不该有命中: {hits:?}");
+    }
+
+    #[test]
+    fn 短关键词也能搜到_多词时命中多的靠前() {
+        let mut conn = open_in_memory().unwrap();
+        add_document_text(
+            &mut conn,
+            "采购合同",
+            None,
+            "md",
+            None,
+            &[
+                TextChunk {
+                    idx: 0,
+                    page: None,
+                    text: "甲方向乙方采购工业摄像机 20 台，总价 172000 元。".into(),
+                },
+                TextChunk {
+                    idx: 1,
+                    page: None,
+                    text: "运输费用由乙方承担，保险由甲方自行办理。".into(),
+                },
+                TextChunk {
+                    idx: 2,
+                    page: None,
+                    text: "质保期为验收合格之日起 24 个月。".into(),
+                },
+            ],
+        )
+        .unwrap();
+
+        // 两个字的查询，哈希向量的相似度过不了阈值，要靠字面匹配
+        let hits = search_text(&conn, "甲方", 5, None).unwrap();
+        assert_eq!(hits.len(), 2, "应找到两个含「甲方」的片段");
+
+        // 两个词都命中的排在只命中一个的前面
+        let hits = search_text(&conn, "甲方 保险", 5, None).unwrap();
+        assert!(hits[0].text.contains("保险"));
+
+        // 字面上完全不沾边的仍然搜不到
+        assert!(search_text(&conn, "推荐一首适合跑步听的歌", 5, None)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

@@ -51,7 +51,7 @@ const store: Record<string, unknown> = {
     { id: "s2", sdk_session_id: "y", title: "第一集里有哪些夜戏？", updated_at: Date.now() / 1000 - 7200 },
     { id: "s3", sdk_session_id: "z", title: "质保期和违约责任", updated_at: Date.now() / 1000 - 172800 },
   ],
-  get_setting: JSON.stringify({ baseUrl: "https://api.deepseek.com/anthropic", apiKey: "demo", model: "deepseek-flash", topK: 6 }),
+  get_setting: JSON.stringify({ baseUrl: "https://api.deepseek.com/anthropic", apiKey: "demo", model: "deepseek-flash", topK: 6, workspace: "/Users/Admin/Desktop/awemesome" }),
   db_info: { docs: 3, chunks: 103, sessions: 3, dbPath: "~/Library/…/docagent.db", dbSizeBytes: 5_400_000, saveDir: "~/Documents/DocAgent" },
 };
 

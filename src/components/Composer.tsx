@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { ArrowUp, FileText, Quote as QuoteIcon, Square, X } from "lucide-react";
+import { ArrowUp, FileText, Folder, Quote as QuoteIcon, Square, X } from "lucide-react";
 import type { Quote } from "@/lib/types";
 
 interface Props {
@@ -16,6 +16,9 @@ interface Props {
   /** 从阅读器带过来的引文，会和问题一起发出去 */
   quote?: Quote | null;
   onClearQuote?: () => void;
+  workspace: string | null;
+  onPickWorkspace: () => void;
+  onClearWorkspace: () => void;
 }
 
 /** 输入框：一个大圆角卡片，文本区随内容长高，底部一行放检索范围、模型和发送 */
@@ -76,7 +79,26 @@ export function Composer(p: Props) {
         className="block min-h-[44px] w-full resize-none bg-transparent px-5 pb-1 pt-4 text-[15px] leading-6 text-text outline-none placeholder:text-text-4"
       />
       <div className="flex items-center gap-2 px-3 pb-3 pt-2">
-        <span className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] text-text-3">
+        <span
+          className={`group inline-flex min-w-0 items-center rounded-lg text-[12px] ${
+            p.workspace ? "bg-segment-bg text-text-2" : "text-text-3 hover:bg-nav-card"
+          }`}
+        >
+          <button
+            className="inline-flex min-w-0 items-center gap-1.5 px-2 py-1"
+            onClick={p.onPickWorkspace}
+            title={p.workspace ?? "选一个文件夹，让助手在里面干活（读代码、写文件），并加载那里的 .docagent 配置"}
+          >
+            <Folder className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{p.workspace ? p.workspace.split("/").pop() : "工作文件夹"}</span>
+          </button>
+          {p.workspace && (
+            <button aria-label="取消工作文件夹" className="pr-1.5 text-text-4 hover:text-text" onClick={p.onClearWorkspace}>
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </span>
+        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] text-text-3">
           <FileText className="h-3.5 w-3.5" />
           {scope}
         </span>
