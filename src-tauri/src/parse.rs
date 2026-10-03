@@ -1,4 +1,4 @@
-//! 文档解析：PDF / DOCX / Markdown / TXT → 按页的纯文本。
+//! 文档解析：PDF / DOCX / Markdown / TXT / 电子书 → 按页的纯文本。
 //!
 //! 放在 Rust 里是因为这是 CPU 活：大文件在后台线程解析，不会卡住界面，
 //! 也让「丢一整个文件夹进来」成为可能。
@@ -10,12 +10,27 @@ use unicode_normalization::UnicodeNormalization;
 
 pub struct Parsed {
     pub kind: &'static str,
-    /// (页码, 文本)。只有 PDF 有页码
+    /// (页码, 文本)。PDF 是页码，EPUB 是第几节，其它没有
     pub pages: Vec<(Option<i64>, String)>,
     pub page_count: Option<i64>,
+    /// 书自带的书名、作者、封面原图（电子书才有）
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub cover: Option<Vec<u8>>,
 }
 
-pub const SUPPORTED: [&str; 6] = ["pdf", "docx", "md", "markdown", "txt", "text"];
+impl Parsed {
+    fn plain(kind: &'static str, text: String) -> Self {
+        Parsed {
+            kind,
+            pages: vec![(None, text)],
+            page_count: None,
+            title: None,
+            author: None,
+            cover: None,
+        }
+    }
+}
 
 pub fn kind_of(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_lowercase().as_str() {
@@ -23,6 +38,10 @@ pub fn kind_of(path: &Path) -> Option<&'static str> {
         "docx" => Some("docx"),
         "md" | "markdown" => Some("md"),
         "txt" | "text" => Some("txt"),
+        "epub" => Some("epub"),
+        "mobi" | "azw" | "azw3" | "kf8" | "prc" => Some("mobi"),
+        "fb2" | "fbz" => Some("fb2"),
+        "cbz" => Some("cbz"),
         _ => None,
     }
 }
@@ -38,16 +57,12 @@ pub fn extract(path: &Path) -> Result<Parsed> {
     let bytes = std::fs::read(path).with_context(|| format!("读不到文件 {}", path.display()))?;
     match kind {
         "pdf" => extract_pdf(&bytes),
-        "docx" => Ok(Parsed {
-            kind,
-            pages: vec![(None, extract_docx(&bytes)?)],
-            page_count: None,
-        }),
-        _ => Ok(Parsed {
-            kind,
-            pages: vec![(None, normalize(&decode_text(&bytes)))],
-            page_count: None,
-        }),
+        "docx" => Ok(Parsed::plain(kind, extract_docx(&bytes)?)),
+        "epub" => crate::ebook::extract_epub(&bytes),
+        "mobi" => crate::ebook::extract_mobi(&bytes),
+        "fb2" => crate::ebook::extract_fb2(&bytes),
+        "cbz" => crate::ebook::extract_cbz(&bytes),
+        _ => Ok(Parsed::plain(kind, normalize(&decode_text(&bytes)))),
     }
 }
 
@@ -71,20 +86,19 @@ fn extract_pdf(bytes: &[u8]) -> Result<Parsed> {
         })
         .filter(|(_, t)| !t.is_empty())
         .collect();
-    if pages.is_empty() {
-        return Err(anyhow!(
-            "这个 PDF 里没有可提取的文字，可能是扫描件（需要 OCR，暂不支持）"
-        ));
-    }
+    // 扫描件提不出文字：照样能导入阅读，只是搜不到里面的内容
     Ok(Parsed {
         kind: "pdf",
         pages,
         page_count: Some(page_count),
+        title: None,
+        author: None,
+        cover: None,
     })
 }
 
 /// DOCX 是个 zip，正文在 word/document.xml：w:t 是文字，w:p 结束换段
-fn extract_docx(bytes: &[u8]) -> Result<String> {
+pub fn extract_docx(bytes: &[u8]) -> Result<String> {
     use quick_xml::events::Event;
     let mut zip =
         zip::ZipArchive::new(std::io::Cursor::new(bytes)).context("不是有效的 DOCX 文件")?;
@@ -132,7 +146,7 @@ fn extract_docx(bytes: &[u8]) -> Result<String> {
 }
 
 /// 文本文件不一定是 UTF-8（老的中文文档常见 GBK），先按 UTF-8 试，不行再猜编码
-fn decode_text(bytes: &[u8]) -> String {
+pub fn decode_text(bytes: &[u8]) -> String {
     if let Ok(s) = std::str::from_utf8(bytes) {
         return s.trim_start_matches('\u{feff}').to_string();
     }

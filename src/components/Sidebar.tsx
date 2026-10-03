@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, CircleCheck, FileText, PanelLeft, Plus, Settings as SettingsIcon, SquarePen, Trash2 } from "lucide-react";
 import * as api from "@/lib/api";
@@ -41,7 +41,7 @@ export function Sidebar(p: Props) {
   async function importFiles() {
     const picked = await open({
       multiple: true,
-      filters: [{ name: "文档", extensions: ["pdf", "docx", "md", "markdown", "txt"] }],
+      filters: [{ name: "文档", extensions: ["pdf", "epub", "mobi", "azw3", "azw", "fb2", "fbz", "cbz", "docx", "md", "markdown", "txt"] }],
     });
     if (!picked) return;
     setDocsOpen(true);
@@ -125,12 +125,26 @@ export function Sidebar(p: Props) {
                   className={`group flex items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] ${
                     d.id === p.readingId ? "bg-nav-card-active text-text" : "text-text-2 hover:bg-nav-card"
                   }`}
-                  title={`${d.title}\n${d.kind.toUpperCase()}${d.pages ? ` · ${d.pages} 页` : ""} · ${d.chunkCount} 个片段`}
+                  title={[
+                    d.title,
+                    d.author,
+                    `${d.kind.toUpperCase()}${d.pages ? ` · ${d.pages} 页` : ""} · ${d.chunkCount ? `${d.chunkCount} 个片段` : "没有可检索的文字"}`,
+                    d.progress != null ? `读到 ${Math.round(d.progress * 100)}%` : null,
+                  ]
+                    .filter(Boolean)
+                    .join("\n")}
                 >
-                  <FileText className={`h-3.5 w-3.5 shrink-0 ${on ? "text-accent" : "text-text-4"}`} />
+                  {d.hasCover ? (
+                    <Cover docId={d.id} />
+                  ) : (
+                    <FileText className={`h-3.5 w-3.5 shrink-0 ${on ? "text-accent" : "text-text-4"}`} />
+                  )}
                   <button className="min-w-0 flex-1 truncate text-left" onClick={() => p.onOpenDoc(d)}>
                     {d.title}
                   </button>
+                  {d.progress != null && d.progress > 0.005 ? (
+                    <span className="num shrink-0 text-[11px] text-text-4 group-hover:hidden">{Math.round(d.progress * 100)}%</span>
+                  ) : null}
                   <button
                     className="hidden group-hover:block"
                     aria-label="删除文档"
@@ -201,4 +215,27 @@ export function Sidebar(p: Props) {
       </button>
     </aside>
   );
+}
+
+/** 书的封面小图。缩略图在 Rust 那边存着，按需取 */
+function Cover({ docId }: { docId: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let dead = false;
+    let made: string | null = null;
+    void api.docCover(docId).then(
+      (u) => {
+        made = u;
+        if (dead && u) URL.revokeObjectURL(u);
+        else setUrl(u);
+      },
+      () => {},
+    );
+    return () => {
+      dead = true;
+      if (made) URL.revokeObjectURL(made);
+    };
+  }, [docId]);
+  if (!url) return <FileText className="h-3.5 w-3.5 shrink-0 text-text-4" />;
+  return <img src={url} alt="" className="h-[22px] w-4 shrink-0 rounded-[2px] object-cover shadow-[0_0_0_0.5px_rgb(0_0_0/0.2)]" />;
 }

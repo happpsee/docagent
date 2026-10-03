@@ -72,23 +72,35 @@ fn import_one(
             text: c.text,
         })
         .collect();
-    if chunks.is_empty() {
+    // 漫画和扫描版 PDF 没有文字：照样能读，只是搜不到
+    if chunks.is_empty() && !matches!(parsed.kind, "cbz" | "pdf") {
         anyhow::bail!("解析后没有内容");
     }
     on_stage("indexing");
-    let title = path
+    let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
+    // 电子书用书里写的书名，其它用文件名
+    let title = parsed
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .unwrap_or(&file_name);
+    let cover = parsed.cover.as_deref().and_then(crate::ebook::thumbnail);
     let path_str = path.to_string_lossy().to_string();
     let mut conn = conn.lock().map_err(|_| anyhow::anyhow!(LOCK))?;
-    db::delete_by_path(&mut conn, &path_str)?;
-    db::add_document_text(
+    db::import_document(
         &mut conn,
-        &title,
-        Some(&path_str),
-        parsed.kind,
-        parsed.page_count,
+        &db::NewDoc {
+            title,
+            path: &path_str,
+            kind: parsed.kind,
+            pages: parsed.page_count,
+            author: parsed.author.as_deref(),
+            cover: cover.as_deref(),
+        },
         &chunks,
     )?;
     Ok(())
@@ -184,10 +196,121 @@ pub fn reset_index(state: State<'_, AppState>) -> Result<(), String> {
     db::reset_index(&conn).map_err(e)
 }
 
-/// 读本地文件字节，给前端解析 PDF / DOCX。路径来自用户在文件选择框里的选择。
+/// 读一份已导入文档的原文件，给阅读器打开（PDF、EPUB 等）。
+/// 走二进制通道返回：几十 MB 的书如果转成 JSON 数组会又慢又占内存。
 #[tauri::command]
-pub fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
-    std::fs::read(&path).map_err(|err| format!("读不到文件 {path}：{err}"))
+pub async fn read_file_bytes(
+    state: State<'_, AppState>,
+    doc_id: String,
+) -> Result<tauri::ipc::Response, String> {
+    let path = {
+        let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+        db::doc_path(&conn, &doc_id).map_err(e)?
+    }
+    .ok_or_else(|| "找不到这份文档的原始文件".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read(&path)
+            .map(tauri::ipc::Response::new)
+            .map_err(|err| format!("读不到文件 {path}：{err}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Markdown / TXT / DOCX 排成分好节的 HTML 和目录，给阅读器当书打开
+#[tauri::command]
+pub async fn document_book(
+    state: State<'_, AppState>,
+    doc_id: String,
+) -> Result<crate::render::Book, String> {
+    let path = {
+        let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+        db::doc_path(&conn, &doc_id).map_err(e)?
+    }
+    .ok_or_else(|| "找不到这份文档的原始文件".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::render::book_for(Path::new(&path)).map_err(e)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------- 阅读器：封面、高亮笔记、进度 ----------
+
+#[tauri::command]
+pub fn doc_cover(
+    state: State<'_, AppState>,
+    doc_id: String,
+) -> Result<tauri::ipc::Response, String> {
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    let data = db::cover(&conn, &doc_id).map_err(e)?.unwrap_or_default();
+    Ok(tauri::ipc::Response::new(data))
+}
+
+/// PDF 这类没法在 Rust 里取封面的，由阅读器渲染出第一页后送过来，这里缩成小图存库
+#[tauri::command]
+pub async fn set_doc_cover(
+    state: State<'_, AppState>,
+    doc_id: String,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    let small = tauri::async_runtime::spawn_blocking(move || crate::ebook::thumbnail(&data))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "封面图片解不出来".to_string())?;
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    db::set_cover(&conn, &doc_id, &small).map_err(e)
+}
+
+#[tauri::command]
+pub fn list_annotations(
+    state: State<'_, AppState>,
+    doc_id: Option<String>,
+) -> Result<Vec<db::Annotation>, String> {
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    let ids = doc_id.map(|d| vec![d]);
+    db::list_annotations(&conn, ids.as_deref()).map_err(e)
+}
+
+#[tauri::command]
+pub fn save_annotation(
+    state: State<'_, AppState>,
+    annotation: db::Annotation,
+) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    db::save_annotation(&conn, &annotation).map_err(e)
+}
+
+#[tauri::command]
+pub fn delete_annotation(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    db::delete_annotation(&conn, &id).map_err(e)
+}
+
+#[tauri::command]
+pub fn reading_state(
+    state: State<'_, AppState>,
+    doc_id: String,
+) -> Result<Option<db::ReadingState>, String> {
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    db::reading_state(&conn, &doc_id).map_err(e)
+}
+
+#[tauri::command]
+pub fn save_reading_state(
+    state: State<'_, AppState>,
+    doc_id: String,
+    location: String,
+    fraction: f64,
+) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    db::save_reading_state(&conn, &doc_id, &location, fraction).map_err(e)
+}
+
+/// 把文字写到用户在「另存为」对话框里选的位置（导出笔记用）
+#[tauri::command]
+pub fn write_text_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, content).map_err(|err| format!("写不了 {path}：{err}"))
 }
 
 // ---------- 设置 ----------

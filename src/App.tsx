@@ -3,11 +3,12 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ChatPanel } from "./components/ChatPanel";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
-import { Reader, type ReadTarget, type SelectionAction } from "./components/Reader";
+import { Reader, type ReadTarget, type SelectionAction } from "./reader/Reader";
 import * as api from "./lib/api";
 import {
   DEFAULT_SETTINGS,
   type AgentEvent,
+  type Annotation,
   type Block,
   type Doc,
   type Extensions,
@@ -39,6 +40,7 @@ export function App() {
   const [dropHover, setDropHover] = useState(false);
   const [extensions, setExtensions] = useState<Extensions | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [notesVersion, setNotesVersion] = useState(0);
 
   // 事件回调里要读最新值，用 ref 避免闭包拿到旧状态
   const askRef = useRef<{ id: string; session: Session; startedAt: number } | null>(null);
@@ -234,6 +236,9 @@ export function App() {
       refreshDocs();
       refreshSessions();
       // 浏览器预览：?chat 直接打开示例会话，方便看对话界面
+      // 浏览器预览：?book=d4 直接打开一本书
+      const book = api.isPreview ? /book=(\w+)/.exec(location.search) : null;
+      if (book) openDoc(book[1]);
       if (api.isPreview && location.search.includes("chat")) {
         const list = await api.listSessions();
         if (list[0]) {
@@ -269,7 +274,7 @@ export function App() {
     }
   }
 
-  async function send(question: string, withQuote: Quote | null = quote) {
+  async function send(question: string, withQuote: Quote | null = quote, scope?: string[]) {
     setError(null);
     setQuote(null);
     let session = current;
@@ -300,7 +305,7 @@ export function App() {
           ? `我在《${withQuote.docTitle}》${withQuote.page ? `第 ${withQuote.page} 页` : ""}选中了这段原文：\n"""\n${withQuote.text}\n"""\n\n${question}`
           : question,
         sessionId: session.sdkSessionId ?? undefined,
-        docIds: selected.size ? [...selected] : undefined,
+        docIds: scope ?? (selected.size ? [...selected] : undefined),
         k: settings.topK,
         cwd: settings.workspace ?? undefined,
       });
@@ -346,8 +351,8 @@ export function App() {
   }
 
   /** 打开文档阅读：侧栏自动收起，把空间让给正文 */
-  function openDoc(docId: string, page?: number | null, quote?: string) {
-    setReading({ docId, page, quote, nonce: Date.now() });
+  function openDoc(docId: string, page?: number | null, quote?: string, cfi?: string) {
+    setReading({ docId, page, quote, cfi, nonce: Date.now() });
     setCollapsed(true);
   }
   const openHit = (h: Hit) => openDoc(h.docId, h.page, h.text);
@@ -373,10 +378,10 @@ export function App() {
   }
 
   /** 阅读器里划词后的三个动作 */
-  function onSelection(action: SelectionAction, text: string, page: number | null) {
+  function onSelection(action: SelectionAction, text: string, page: number | null, cfi: string) {
     const d = docs.find((x) => x.id === reading?.docId);
     if (!d) return;
-    const q: Quote = { text, docId: d.id, docTitle: d.title, page };
+    const q: Quote = { text, docId: d.id, docTitle: d.title, page, cfi };
     if (action === "ask") return setQuote(q); // 放进输入框，等用户写问题
     if (busy || agent !== "ready") return setQuote(q);
     void send(
@@ -385,6 +390,47 @@ export function App() {
         : "在我的文档里找出和这段内容相关的其它地方，说明它们之间的关系（有没有呼应、补充或矛盾）。",
       q,
     );
+  }
+
+  /** 让助手读这本书上的划线和笔记，帮忙归纳 */
+  function askNotes(d: Doc) {
+    if (busy || agent !== "ready") return setError("助手还没准备好，稍后再试");
+    void send(
+      `读一下我在《${d.title}》里划的重点和写的笔记（用 list_notes 工具），帮我整理：按主题归类、提炼要点，再指出几处我可能没注意到的关联。`,
+      null,
+      [d.id],
+    );
+  }
+
+  /** 把助手对一段原文的回答记到那段话上：已有划线就追加到它的笔记里，没有就新建一条 */
+  async function saveAnswerAsNote(q: Quote, answer: string) {
+    if (!q.cfi) return;
+    try {
+      const all = await api.listAnnotations(q.docId);
+      const old = all.find((a) => a.kind === "highlight" && a.cfi === q.cfi);
+      const now = Math.floor(Date.now() / 1000);
+      const note: Annotation = old
+        ? { ...old, note: old.note ? `${old.note}\n\n${answer}` : answer, updatedAt: now }
+        : {
+            id: crypto.randomUUID(),
+            docId: q.docId,
+            kind: "highlight",
+            cfi: q.cfi,
+            text: q.text,
+            note: answer,
+            color: "yellow",
+            style: "highlight",
+            label: "",
+            page: q.page,
+            createdAt: now,
+            updatedAt: now,
+          };
+      await api.saveAnnotation(note);
+      setNotesVersion((v) => v + 1);
+    } catch (err) {
+      setError(String(err));
+      throw err;
+    }
   }
 
   function answerApproval(requestId: string, allow: boolean, remember = false) {
@@ -447,7 +493,16 @@ export function App() {
           onImport={(paths) => void importPaths(paths)}
         />
         {readingDoc && reading && (
-          <Reader doc={readingDoc} target={reading} onClose={closeReader} onSelection={onSelection} />
+          <Reader
+            doc={readingDoc}
+            target={reading}
+            notesVersion={notesVersion}
+            onClose={closeReader}
+            onSelection={onSelection}
+            onAskNotes={askNotes}
+            onDocsChanged={refreshDocs}
+            onError={setError}
+          />
         )}
         <div className={readingDoc ? "flex w-[400px] shrink-0 border-l border-hairline" : "flex min-w-0 flex-1"}>
           <ChatPanel
@@ -466,7 +521,8 @@ export function App() {
             onApproval={answerApproval}
             quote={quote}
             onClearQuote={() => setQuote(null)}
-            onOpenQuote={(q) => openDoc(q.docId, q.page, q.text)}
+            onOpenQuote={(q) => openDoc(q.docId, q.page, q.text, q.cfi)}
+            onSaveNote={saveAnswerAsNote}
             workspace={settings.workspace}
             onPickWorkspace={() => void pickWorkspace()}
             onClearWorkspace={() => void setWorkspace(null)}

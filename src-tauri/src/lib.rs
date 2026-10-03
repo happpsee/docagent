@@ -11,8 +11,11 @@ pub mod agent;
 pub mod chunk;
 pub mod commands;
 pub mod db;
+pub mod ebook;
 pub mod embed;
+pub mod markup;
 pub mod parse;
+pub mod render;
 pub mod server;
 
 use std::path::PathBuf;
@@ -63,6 +66,15 @@ pub fn run() {
             commands::delete_document,
             commands::reset_index,
             commands::read_file_bytes,
+            commands::document_book,
+            commands::doc_cover,
+            commands::set_doc_cover,
+            commands::list_annotations,
+            commands::save_annotation,
+            commands::delete_annotation,
+            commands::reading_state,
+            commands::save_reading_state,
+            commands::write_text_file,
             commands::get_setting,
             commands::set_setting,
             commands::db_info,

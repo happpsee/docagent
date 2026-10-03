@@ -58,6 +58,7 @@ pub fn start(conn: Arc<Mutex<Connection>>, save_dir: PathBuf) -> Result<LocalApi
             let result: Result<serde_json::Value> = match (req.method(), req.url()) {
                 (Method::Post, "/search") => handle_search(&conn, &body),
                 (Method::Post, "/save") => handle_save(&save_dir, &body),
+                (Method::Post, "/annotations") => handle_annotations(&conn, &body),
                 _ => Err(anyhow::anyhow!("未知接口")),
             };
             let (code, payload) = match result {
@@ -97,6 +98,19 @@ fn handle_search(conn: &Arc<Mutex<Connection>>, body: &str) -> Result<serde_json
         })
         .collect();
     Ok(serde_json::json!({ "hits": hits }))
+}
+
+/// 用户在阅读器里划的高亮和写的笔记，给 agent 看
+fn handle_annotations(conn: &Arc<Mutex<Connection>>, body: &str) -> Result<serde_json::Value> {
+    #[derive(Deserialize)]
+    struct Req {
+        #[serde(rename = "docIds")]
+        doc_ids: Option<Vec<String>>,
+    }
+    let req: Req = serde_json::from_str(body)?;
+    let conn = conn.lock().map_err(|_| anyhow::anyhow!("数据库锁异常"))?;
+    let list = db::list_annotations(&conn, req.doc_ids.as_deref())?;
+    Ok(serde_json::json!({ "annotations": list }))
 }
 
 /// 保存到固定目录下，文件名去掉路径成分——agent 给的名字不能决定写到哪

@@ -184,6 +184,7 @@ async function gate(tool: string, input: Record<string, unknown>): Promise<{ all
   switch (tool) {
     case "TodoWrite":
     case "mcp__docagent__search_docs":
+    case "mcp__docagent__list_notes":
     case "mcp__docagent__save_note": // 它的审批在工具内部做
       return { allow: true };
     case "Read":
@@ -261,7 +262,8 @@ function renderHits(hits: Hit[], numbers: number[]): string {
   if (!hits.length) return "没有找到相关内容。";
   return hits
     .map((h, i) => {
-      const loc = h.page ? `第 ${h.page} 页` : "正文";
+      // 电子书的 page 存的是第几节，只有 PDF 是真页码
+      const loc = !h.page ? "正文" : /\.pdf$/i.test(h.docTitle) ? `第 ${h.page} 页` : `第 ${h.page} 节`;
       return `[${numbers[i]}] 《${h.docTitle}》${loc}\n${h.text}`;
     })
     .join("\n\n");
@@ -295,6 +297,27 @@ const docTools = createSdkMcpServer({
       },
     ),
     tool(
+      "list_notes",
+      "读取用户在阅读器里划的重点（高亮）和写的笔记。用户提到「我的笔记」「我划的线」「我标的重点」时用。",
+      {},
+      async () => {
+        const ctx = currentAskId ? asks.get(currentAskId) : undefined;
+        if (!HOST_API) return { content: [{ type: "text", text: "（未连接阅读器）" }] };
+        const out = (await hostFetch("/annotations", { docIds: ctx?.docIds ?? null })) as {
+          annotations: { kind: string; docTitle: string; label: string; page: number | null; text: string; note: string }[];
+        };
+        const marks = out.annotations.filter((a) => a.kind === "highlight");
+        if (!marks.length) return { content: [{ type: "text", text: "用户还没有划线或写笔记。" }] };
+        const text = marks
+          .map((a) => {
+            const where = [`《${a.docTitle}》`, a.label, a.page ? `第 ${a.page} 页` : ""].filter(Boolean).join(" ");
+            return `${where}\n划线：${a.text}${a.note ? `\n笔记：${a.note}` : ""}`;
+          })
+          .join("\n\n");
+        return { content: [{ type: "text", text }] };
+      },
+    ),
+    tool(
       "save_note",
       "把内容保存成本地文件。会先征求用户同意。",
       { filename: z.string().describe("文件名，如 合同要点.md"), content: z.string() },
@@ -318,6 +341,7 @@ const RULES = `你运行在一个叫 DocAgent 的桌面应用里，是用户的�
 - 问题可能和用户的资料有关时先检索。文档内容和你的常识冲突时以文档为准。
 - 来自文档库的结论在句末标注编号 [1]、[2]（对应检索结果里的编号）；其它来源（你自己的知识、读到的本地文件、网页）不要用这种编号，直接说明来源。
 - 不要把自身知识说成是文档里的，不要编造引用。
+- 用户在阅读器里划的重点和写的笔记用 list_notes 读取；整理笔记时以用户划的原文为依据。
 
 做事方式：
 - 用户让你了解某个项目或目录时，直接去看（Bash 里用 ls / rg / find，或用 Read 读文件），不要说自己做不到。

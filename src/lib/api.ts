@@ -8,7 +8,7 @@ export const isPreview = !inTauri;
 const invoke = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
   inTauri ? tauriInvoke<T>(cmd, args) : mockInvoke<T>(cmd, args);
 
-import type { AgentEvent, Block, Doc, DocKind, Hit, Message, Quote, Session } from "./types";
+import type { AgentEvent, Annotation, Block, Doc, DocKind, Hit, Message, Quote, Session } from "./types";
 
 export interface ImportProgress {
   name: string;
@@ -43,7 +43,10 @@ export const documentText = (docId: string) => invoke<string>("document_text", {
 
 export async function listDocuments(): Promise<Doc[]> {
   const raw = await invoke<
-    { id: string; title: string; path: string | null; kind: string; pages: number | null; chunk_count: number; created_at: number }[]
+    {
+      id: string; title: string; path: string | null; kind: string; pages: number | null; chunk_count: number;
+      created_at: number; author?: string | null; has_cover?: boolean; progress?: number | null;
+    }[]
   >("list_documents");
   return raw.map((d) => ({
     id: d.id,
@@ -53,12 +56,52 @@ export async function listDocuments(): Promise<Doc[]> {
     pages: d.pages,
     chunkCount: d.chunk_count,
     createdAt: d.created_at,
+    author: d.author ?? null,
+    hasCover: !!d.has_cover,
+    progress: d.progress ?? null,
   }));
 }
 
 export const deleteDocument = (docId: string) => invoke<void>("delete_document", { docId });
 export const resetIndex = () => invoke<void>("reset_index");
-export const readFileBytes = (path: string) => invoke<number[]>("read_file_bytes", { path });
+
+/** 原文件的字节（Rust 走二进制通道返回 ArrayBuffer） */
+export const readFileBytes = (docId: string) => invoke<ArrayBuffer>("read_file_bytes", { docId });
+
+// ---------- 阅读器 ----------
+
+export interface BookSection {
+  id: string;
+  html: string;
+}
+export interface TocItem {
+  label: string;
+  href: string;
+  subitems?: TocItem[] | null;
+}
+/** Markdown / TXT / DOCX 由 Rust 排成分好节的 HTML */
+export const documentBook = (docId: string) =>
+  invoke<{ sections: BookSection[]; toc: TocItem[] }>("document_book", { docId });
+
+/** 封面缩略图的 blob 地址；没有封面返回 null */
+export async function docCover(docId: string): Promise<string | null> {
+  const buf = await invoke<ArrayBuffer | null>("doc_cover", { docId });
+  if (!buf || !buf.byteLength) return null;
+  return URL.createObjectURL(new Blob([buf], { type: "image/jpeg" }));
+}
+export const setDocCover = (docId: string, data: Uint8Array) =>
+  invoke<void>("set_doc_cover", { docId, data: Array.from(data) });
+
+export const listAnnotations = (docId?: string) =>
+  invoke<Annotation[] | null>("list_annotations", { docId: docId ?? null }).then((l) => l ?? []);
+export const saveAnnotation = (annotation: Annotation) => invoke<void>("save_annotation", { annotation });
+export const deleteAnnotation = (id: string) => invoke<void>("delete_annotation", { id });
+export const readingState = (docId: string) =>
+  invoke<{ location: string | null; fraction: number } | null>("reading_state", { docId });
+export const saveReadingState = (docId: string, location: string, fraction: number) =>
+  invoke<void>("save_reading_state", { docId, location, fraction });
+export const writeTextFile = (path: string, content: string) => invoke<void>("write_text_file", { path, content });
+
 export const getSetting = (key: string) => invoke<string | null>("get_setting", { key });
 export const setSetting = (key: string, value: string) => invoke<void>("set_setting", { key, value });
 export const dbInfo = () =>

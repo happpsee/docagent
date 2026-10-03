@@ -820,3 +820,9 @@ body, .dark body { background: var(--color-bg); }
 .reader-article li { margin: 0.3em 0; }
 ::highlight(cite) { background-color: #f5c24266; }
 .dark ::highlight(cite) { background-color: #d4a24a55; }
+
+/* ---------- 阅读器外壳 ---------- */
+.reader-progress { accent-color: var(--color-accent); height: 3px; cursor: pointer; }
+/* 引擎内部会调 scrollIntoView，别让它把整个窗口也带着滚走 */
+html, body { overflow: clip; }
+.reader-stage { overflow: clip; }

@@ -1,4 +1,4 @@
-export type DocKind = "pdf" | "docx" | "md" | "txt";
+export type DocKind = "pdf" | "docx" | "md" | "txt" | "epub" | "mobi" | "fb2" | "cbz";
 
 export interface Doc {
   id: string;
@@ -8,7 +8,61 @@ export interface Doc {
   pages: number | null;
   chunkCount: number;
   createdAt: number;
+  author: string | null;
+  hasCover: boolean;
+  /** 读到全书的几分之几（0-1）；没打开过是 null */
+  progress: number | null;
 }
+
+export type HighlightColor = "yellow" | "green" | "blue" | "pink" | "purple";
+export type HighlightStyle = "highlight" | "underline" | "squiggly";
+
+/** 阅读器里的一条标记：高亮（可带笔记）或书签 */
+export interface Annotation {
+  id: string;
+  docId: string;
+  kind: "highlight" | "bookmark";
+  /** 书内位置 */
+  cfi: string;
+  /** 被标记的原文 */
+  text: string;
+  note: string;
+  color: HighlightColor;
+  style: HighlightStyle;
+  /** 所在章节 */
+  label: string;
+  page: number | null;
+  createdAt: number;
+  updatedAt: number;
+  docTitle?: string;
+}
+
+/** 阅读偏好（所有书共用） */
+export interface ReaderPrefs {
+  fontSize: number;
+  lineHeight: number;
+  /** 版心宽度（像素） */
+  width: number;
+  flow: "paginated" | "scrolled";
+  columns: 1 | 2;
+  font: "serif" | "sans" | "book";
+  theme: "warm" | "paper" | "green" | "night";
+  justify: boolean;
+  /** PDF / 漫画：一次显示一页还是双页 */
+  spread: "none" | "both";
+}
+
+export const DEFAULT_READER_PREFS: ReaderPrefs = {
+  fontSize: 17,
+  lineHeight: 1.8,
+  width: 720,
+  flow: "paginated",
+  columns: 1,
+  font: "serif",
+  theme: "warm",
+  justify: true,
+  spread: "none",
+};
 
 export interface Hit {
   chunkId: number;
@@ -40,6 +94,8 @@ export interface Quote {
   docId: string;
   docTitle: string;
   page: number | null;
+  /** 书内位置：有它才能把回答存回这段话的笔记里 */
+  cfi?: string;
 }
 
 export interface Message {

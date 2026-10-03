@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronRight, Circle, Loader2 } from "lucide-react";
-import { citedNumbers } from "@/lib/citations";
+import { Check, ChevronRight, Circle, Loader2, NotebookPen } from "lucide-react";
+import { citedNumbers, pageLabel } from "@/lib/citations";
 import type { Block, Hit, Message, Quote } from "@/lib/types";
 import { StreamMarkdown } from "./StreamMarkdown";
 import { Composer } from "./Composer";
@@ -24,6 +24,8 @@ interface Props {
   quote: Quote | null;
   onClearQuote: () => void;
   onOpenQuote: (q: Quote) => void;
+  /** 把助手对一段原文的回答存成那段话的笔记 */
+  onSaveNote: (q: Quote, answer: string) => Promise<void>;
   workspace: string | null;
   onPickWorkspace: () => void;
   onClearWorkspace: () => void;
@@ -125,7 +127,7 @@ export function ChatPanel(p: Props) {
                     <div className="line-clamp-3 text-[12px] leading-5 text-text-2">{m.quote.text}</div>
                     <div className="mt-0.5 text-[11px] text-text-4">
                       {m.quote.docTitle}
-                      {m.quote.page ? ` · 第 ${m.quote.page} 页` : ""}
+                      {pageLabel(m.quote.docTitle, m.quote.page)}
                     </div>
                   </button>
                 )}
@@ -140,6 +142,8 @@ export function ChatPanel(p: Props) {
                 startedAt={m.pending ? p.startedAt : null}
                 onCite={p.onCite}
                 onApproval={p.onApproval}
+                quote={p.messages[i - 1]?.role === "user" ? p.messages[i - 1].quote : undefined}
+                onSaveNote={p.onSaveNote}
               />
             ),
           )}
@@ -162,12 +166,18 @@ function Assistant({
   startedAt,
   onCite,
   onApproval,
+  quote,
+  onSaveNote,
 }: {
   m: Message;
   startedAt: number | null;
   onCite: (h: Hit) => void;
   onApproval: Props["onApproval"];
+  /** 这条回答对应的提问里带的原文 */
+  quote?: Quote;
+  onSaveNote: Props["onSaveNote"];
 }) {
+  const [saved, setSaved] = useState(false);
   const blocks: Block[] = m.blocks?.length ? m.blocks : m.content ? [{ type: "text", text: m.content }] : [];
   const fullText = blocks.map((b) => (b.type === "text" ? b.text : "")).join("\n");
   const cited = citedNumbers(fullText).filter((n) => m.hits?.[n - 1]);
@@ -204,12 +214,24 @@ function Assistant({
                 <span className="num text-accent">[{n}]</span>
                 <span className="truncate">
                   {h.docTitle}
-                  {h.page ? ` · 第 ${h.page} 页` : ""}
+                  {pageLabel(h.docTitle, h.page)}
                 </span>
               </button>
             );
           })}
         </div>
+      )}
+
+      {!m.pending && !m.error && quote?.cfi && fullText.trim() && (
+        <button
+          disabled={saved}
+          onClick={() => void onSaveNote(quote, fullText.trim()).then(() => setSaved(true))}
+          className="inline-flex w-fit items-center gap-1.5 rounded-md border border-hairline px-2 py-1 text-[12px] text-text-2 hover:border-accent hover:text-accent disabled:border-transparent disabled:text-text-4"
+          title="把这条回答记在你选中的那段原文上，之后在笔记里能看到"
+        >
+          <NotebookPen className="h-3.5 w-3.5" />
+          {saved ? "已存到这段话的笔记" : "存为这段话的笔记"}
+        </button>
       )}
 
       {!m.pending && (m.durationMs != null || m.costUsd != null) && (

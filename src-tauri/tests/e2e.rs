@@ -139,6 +139,42 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
         let (chunks, kind, pages) = chunks(&root.join("test-docs").join(name));
         db::add_document_text(&mut conn, name, None, kind, pages, &chunks).unwrap();
     }
+    // 再导入一本 EPUB，并在上面划一条带笔记的高亮（模拟用户在阅读器里的操作）
+    let epub = root.join("test-docs/示例小说.epub");
+    let parsed = parse::extract(&epub).unwrap();
+    let (book_chunks, _, _) = chunks(&epub);
+    let book_id = db::import_document(
+        &mut conn,
+        &db::NewDoc {
+            title: parsed.title.as_deref().unwrap(),
+            path: &epub.to_string_lossy(),
+            kind: parsed.kind,
+            pages: None,
+            author: parsed.author.as_deref(),
+            cover: None,
+        },
+        &book_chunks,
+    )
+    .unwrap();
+    db::save_annotation(
+        &conn,
+        &db::Annotation {
+            id: "n1".into(),
+            doc_id: book_id,
+            kind: "highlight".into(),
+            cfi: "epubcfi(/6/2!/4/4,/1:0,/1:10)".into(),
+            text: "这台相机他认得——三十年前，是他亲手卖出去的。".into(),
+            note: "伏笔：老陈和小满早就认识".into(),
+            color: "yellow".into(),
+            style: "highlight".into(),
+            label: "第一章 雨夜来客".into(),
+            page: None,
+            created_at: 0,
+            updated_at: 0,
+            doc_title: String::new(),
+        },
+    )
+    .unwrap();
     let conn = Arc::new(Mutex::new(conn));
     let api = server::start(conn, save_dir.clone()).unwrap();
 
@@ -202,8 +238,11 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
         "应明确说资料里查不到：{}",
         r3.answer
     );
+    // 回答里可以提到合同金额，但不能在说注册资本的那句话里给出数额
     assert!(
-        !r3.answer.contains("万元"),
+        !r3.answer
+            .lines()
+            .any(|l| l.contains("注册资本") && l.contains("万元")),
         "不应编造注册资本的数额：{}",
         r3.answer
     );
@@ -290,6 +329,39 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
     assert!(
         !r4.saved && !save_dir.join("付款条款.md").exists(),
         "拒绝后不应写文件"
+    );
+
+    // 电子书：能检索到书里的内容；能读到用户划的线和笔记
+    println!("[问] 《槐花开》里照片背面写了什么？");
+    let rb = ask(
+        &root,
+        &api,
+        &config_dir,
+        "《槐花开》里最后一张照片背面写了什么？",
+        None,
+        false,
+    );
+    println!("[答] {}\n", rb.answer);
+    assert!(
+        rb.answer.contains("槐花开"),
+        "应答出「等你到槐花开」：{}",
+        rb.answer
+    );
+
+    println!("[问] 我在书里划了哪些重点？");
+    let rn = ask(
+        &root,
+        &api,
+        &config_dir,
+        "我在书里划了哪些重点、写了什么笔记？用 list_notes 看一下，原样告诉我笔记内容。",
+        None,
+        false,
+    );
+    println!("[答] {}\n", rn.answer);
+    assert!(
+        rn.answer.contains("伏笔") || rn.answer.contains("亲手卖出去"),
+        "应读到用户的划线和笔记：{}",
+        rn.answer
     );
 
     // 6. 同意审批后应落盘

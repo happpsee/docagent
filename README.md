@@ -6,9 +6,12 @@ Tauri 2 + React + Rust，agent 用 Claude Agent SDK，向量检索用 SQLite 的
 
 ## 能做什么
 
-- **导入** PDF / DOCX / Markdown / TXT，自动解析、分块、建索引
+- **导入** PDF / EPUB / MOBI / AZW3 / FB2 / CBZ / DOCX / Markdown / TXT，自动解析、分块、建索引
+- **阅读器**：所有格式走同一个排版引擎，都有目录、书内搜索、书签、进度记忆、翻页/滚动、字号行距版心、四种纸色
+- **划线和笔记**：五种颜色、高亮/下划线/波浪线，可以写想法；笔记面板里集中看、跳回原文、导出 Markdown
+- **读和问连在一起**：选中一段直接问助手；助手的回答可以存回那段话的笔记；助手能读你划的重点帮你整理
 - **提问**：agent 自己决定检索什么、要不要换个说法再查，流式输出 Markdown
-- **引用溯源**：回答下方的引用可以点开，看到原文片段；PDF 会渲染那一页
+- **引用溯源**：回答下方的引用可以点开，阅读器跳到原文那一处并标出来
 - **拒答**：资料里没有就明说没有，不编
 - **通用助手**：和 Claude Code 同一套工具——读写本地文件、跑命令、联网搜索、抓网页、派子代理
 - **审批**：读取本地位置、写文件、跑命令、联网前都会问你，可以选"本次都允许"；没见过的工具默认也先问
@@ -27,7 +30,8 @@ WebView（React）  ←Tauri 命令/事件→  Rust  ←stdin/stdout JSON→  si
 
 - **Rust**（`src-tauri/`）：文档解析与分块、存储（文档、向量、会话）、管理 sidecar 进程
 - **sidecar**（`sidecar/agent.ts`）：agent 循环、工具调用、会话续接，全部交给 Claude Agent SDK
-- **前端**（`src/`）：界面和阅读器（PDF 用 pdf.js 渲染）
+- **前端**（`src/`）：界面和阅读器。排版引擎是 [foliate-js](https://github.com/johnfactotum/foliate-js)（`src/vendor/foliate-js`，取自 readest 的分支）——分页排版靠 WebView 自己的 HTML/CSS 引擎，这一层没法挪到 Rust
+- 阅读相关的其余部分都在 Rust：电子书的文字/书名/封面提取（`ebook.rs`）、把 Markdown/TXT/DOCX 排成分节的 HTML 和目录（`render.rs`）、划线笔记书签和进度的存储（`db.rs`）
 
 sidecar 的工具（检索、保存）通过只绑本机、带一次性 token 的 HTTP 接口调回 Rust。
 
@@ -88,7 +92,9 @@ DOCAGENT_TEST_KEY=sk-... cargo test --test e2e -- --ignored --nocapture
 ## 已知限制
 
 - 检索是本地哈希向量加关键词匹配，都偏字面，同义不同词可能查不到；靠 agent 多次换词检索来弥补
-- 扫描版 PDF 没有文字层，需要 OCR，暂不支持
+- 扫描版 PDF 没有文字层：能读、能加书签，但搜不到内容、也划不了线（需要 OCR，暂不支持）
+- 带 DRM 的电子书打不开
+- readest 里这些没有搬：朗读（TTS）、翻译、词典、云同步、OPDS 书源
 - macOS 包未签名，首次打开要在「系统设置 → 隐私与安全性」里允许
 - API Key 明文存在本机数据库里
 

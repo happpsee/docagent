@@ -6,4 +6,10 @@ DocAgent
   - src/hooks/{useEscapeClose,useFocusTrap}.ts
   - src/components/StreamMarkdown.tsx（按其实现改写）
 
+阅读器的排版引擎是 foliate-js（MIT，© John Factotum），取自 readest 维护的分支：
+  - src/vendor/foliate-js/（许可证见该目录下的 LICENSE）
+  - 其中自带 pdf.js（Apache-2.0）、zip.js（BSD-3-Clause）、fflate（MIT）
+  - 改动：view.js 里搜索命中框的颜色
+阅读器的功能划分参考了 readest（AGPL-3.0），界面和存储是本项目自己写的。
+
 因此本项目同样以 AGPL-3.0 发布。

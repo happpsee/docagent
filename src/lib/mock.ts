@@ -2,7 +2,8 @@
  *  方便调界面。不参与正式构建后的任何逻辑。 */
 import samplePdf from "../../test-docs/采购合同.pdf?url";
 import sampleMd from "../../test-docs/服务协议.md?raw";
-import type { Hit, Message } from "./types";
+import sampleEpub from "../../test-docs/示例小说.epub?url";
+import type { Annotation, Hit, Message } from "./types";
 
 const hits: Hit[] = [
   { chunkId: 1, docId: "d1", docTitle: "采购合同.pdf", idx: 2, page: 1, distance: 1.02,
@@ -45,6 +46,7 @@ const store: Record<string, unknown> = {
     { id: "d1", title: "采购合同.pdf", path: "sample.pdf", kind: "pdf", pages: 3, chunk_count: 34, created_at: 0 },
     { id: "d2", title: "服务协议.md", path: "sample.md", kind: "md", pages: null, chunk_count: 8, created_at: 0 },
     { id: "d3", title: "第一集剧本（定稿）.docx", path: null, kind: "docx", pages: null, chunk_count: 61, created_at: 0 },
+    { id: "d4", title: "槐花开", path: "sample.epub", kind: "epub", pages: null, chunk_count: 12, created_at: 0, author: "测试作者", progress: 0.37 },
   ],
   list_sessions: [
     { id: "s1", sdk_session_id: "x", title: "对比两份合同的付款方式", updated_at: Date.now() / 1000 - 120 },
@@ -55,6 +57,29 @@ const store: Record<string, unknown> = {
   db_info: { docs: 3, chunks: 103, sessions: 3, dbPath: "~/Library/…/docagent.db", dbSizeBytes: 5_400_000, saveDir: "~/Documents/DocAgent" },
 };
 
+const notes: Annotation[] = [];
+
+/** 预览里没有 Rust，用最简单的规则把示例 Markdown 排成书（正式环境是 Rust 的 render.rs） */
+function mdBook(md: string) {
+  const toc: { label: string; href: string; subitems: never[] }[] = [];
+  let n = 0;
+  const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const inline = (t: string) => esc(t).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  const html = md
+    .split(/\n{2,}/)
+    .map((block) => {
+      const h = /^(#{1,6})\s+(.*)$/.exec(block.trim());
+      if (h) {
+        n += 1;
+        toc.push({ label: h[2], href: `s0#h${n}`, subitems: [] });
+        return `<h${h[1].length} id="h${n}">${inline(h[2])}</h${h[1].length}>`;
+      }
+      return `<p>${inline(block).replace(/\n/g, "<br/>")}</p>`;
+    })
+    .join("\n");
+  return { sections: [{ id: "s0", html }], toc };
+}
+
 export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (cmd === "get_messages") {
     const meta = (m: Message) => JSON.stringify({ blocks: m.blocks, hits: m.hits, costUsd: m.costUsd, durationMs: m.durationMs });
@@ -63,10 +88,21 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
   if (cmd === "document_text") return sampleMd as T;
   if (cmd === "import_paths") return { imported: 0, failed: [] } as T;
   if (cmd === "read_file_bytes") {
-    const buf = String(args?.path).endsWith(".pdf")
-      ? new Uint8Array(await (await fetch(samplePdf)).arrayBuffer())
-      : new TextEncoder().encode(sampleMd);
-    return Array.from(buf) as T;
+    return (await (await fetch(args?.docId === "d4" ? sampleEpub : samplePdf)).arrayBuffer()) as T;
+  }
+  if (cmd === "document_book") return mdBook(sampleMd) as T;
+  if (cmd === "list_annotations") return notes.filter((a) => !args?.docId || a.docId === args.docId) as T;
+  if (cmd === "save_annotation") {
+    const a = args?.annotation as Annotation;
+    const i = notes.findIndex((x) => x.id === a.id);
+    if (i >= 0) notes[i] = a;
+    else notes.push(a);
+    return null as T;
+  }
+  if (cmd === "delete_annotation") {
+    const i = notes.findIndex((x) => x.id === args?.id);
+    if (i >= 0) notes.splice(i, 1);
+    return null as T;
   }
   return (store[cmd] ?? null) as T;
 }

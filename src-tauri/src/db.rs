@@ -26,6 +26,10 @@ pub struct DocOut {
     pub pages: Option<i64>,
     pub chunk_count: i64,
     pub created_at: i64,
+    pub author: Option<String>,
+    pub has_cover: bool,
+    /// 读到全书的几分之几；没打开过是 null
+    pub progress: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,8 +123,42 @@ fn init_schema(conn: &Connection) -> Result<()> {
             created_at  INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+
+        -- 阅读器：封面缩略图、高亮/笔记/书签、读到哪了
+        CREATE TABLE IF NOT EXISTS covers (
+            doc_id  TEXT PRIMARY KEY REFERENCES docs(id) ON DELETE CASCADE,
+            data    BLOB NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS annotations (
+            id          TEXT PRIMARY KEY,
+            doc_id      TEXT NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+            kind        TEXT NOT NULL,              -- highlight / bookmark
+            cfi         TEXT NOT NULL,              -- 书内位置（EPUB CFI）
+            text        TEXT NOT NULL DEFAULT '',   -- 被标记的原文
+            note        TEXT NOT NULL DEFAULT '',
+            color       TEXT NOT NULL DEFAULT 'yellow',
+            style       TEXT NOT NULL DEFAULT 'highlight',
+            label       TEXT NOT NULL DEFAULT '',   -- 所在章节
+            page        INTEGER,
+            created_at  INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_annotations_doc ON annotations(doc_id);
+        CREATE TABLE IF NOT EXISTS reading_state (
+            doc_id      TEXT PRIMARY KEY REFERENCES docs(id) ON DELETE CASCADE,
+            location    TEXT,
+            fraction    REAL NOT NULL DEFAULT 0,
+            updated_at  INTEGER NOT NULL
+        );
         "#,
     )?;
+    // 老库升级：docs 后来才加的列
+    let has_author = conn
+        .prepare("SELECT 1 FROM pragma_table_info('docs') WHERE name = 'author'")?
+        .exists([])?;
+    if !has_author {
+        conn.execute("ALTER TABLE docs ADD COLUMN author TEXT", [])?;
+    }
     Ok(())
 }
 
@@ -217,7 +255,10 @@ pub fn add_document(
 pub fn list_documents(conn: &Connection) -> Result<Vec<DocOut>> {
     let mut stmt = conn.prepare(
         "SELECT d.id, d.title, d.path, d.kind, d.pages, d.created_at,
-                (SELECT COUNT(*) FROM chunks c WHERE c.doc_id = d.id)
+                (SELECT COUNT(*) FROM chunks c WHERE c.doc_id = d.id),
+                d.author,
+                EXISTS(SELECT 1 FROM covers v WHERE v.doc_id = d.id),
+                (SELECT fraction FROM reading_state r WHERE r.doc_id = d.id)
          FROM docs d ORDER BY d.created_at DESC",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -229,6 +270,9 @@ pub fn list_documents(conn: &Connection) -> Result<Vec<DocOut>> {
             pages: r.get(4)?,
             created_at: r.get(5)?,
             chunk_count: r.get(6)?,
+            author: r.get(7)?,
+            has_cover: r.get(8)?,
+            progress: r.get(9)?,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -467,6 +511,217 @@ pub fn doc_path(conn: &Connection, doc_id: &str) -> Result<Option<String>> {
         )
         .ok()
         .flatten())
+}
+
+/// 导入一份文档。同一路径再次导入时沿用原来的 id、只换内容——
+/// 这样重新导入（文件改过了）不会把这份文档上的高亮、笔记和阅读进度弄丢。
+/// chunks 可以为空（漫画、扫描件）：能读，只是搜不到。
+pub struct NewDoc<'a> {
+    pub title: &'a str,
+    pub path: &'a str,
+    pub kind: &'a str,
+    pub pages: Option<i64>,
+    pub author: Option<&'a str>,
+    pub cover: Option<&'a [u8]>,
+}
+
+pub fn import_document(
+    conn: &mut Connection,
+    doc: &NewDoc,
+    chunks: &[TextChunk],
+) -> Result<String> {
+    if !chunks.is_empty() {
+        ensure_vec_table(conn, crate::embed::DIM)?;
+    }
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM docs WHERE path = ?1",
+            params![doc.path],
+            |r| r.get(0),
+        )
+        .ok();
+    let has_vec = table_exists(conn, "vec_chunks")?;
+    let tx = conn.transaction()?;
+    let doc_id = match existing {
+        Some(id) => {
+            if has_vec {
+                tx.execute(
+                    "DELETE FROM vec_chunks WHERE rowid IN (SELECT id FROM chunks WHERE doc_id = ?1)",
+                    params![id],
+                )?;
+            }
+            tx.execute("DELETE FROM chunks WHERE doc_id = ?1", params![id])?;
+            tx.execute(
+                "UPDATE docs SET title = ?2, kind = ?3, pages = ?4, author = ?5 WHERE id = ?1",
+                params![id, doc.title, doc.kind, doc.pages, doc.author],
+            )?;
+            id
+        }
+        None => {
+            let id = uuid::Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO docs(id, title, path, kind, pages, author, created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![id, doc.title, doc.path, doc.kind, doc.pages, doc.author, now()],
+            )?;
+            id
+        }
+    };
+    {
+        let mut ins_chunk =
+            tx.prepare("INSERT INTO chunks(doc_id, idx, page, text) VALUES(?1,?2,?3,?4)")?;
+        for c in chunks {
+            ins_chunk.execute(params![doc_id, c.idx, c.page, c.text])?;
+            let rowid = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO vec_chunks(rowid, embedding) VALUES(?1, ?2)",
+                params![rowid, vec_json(&crate::embed::hash_embed(&c.text))],
+            )?;
+        }
+    }
+    if let Some(data) = doc.cover {
+        tx.execute(
+            "INSERT OR REPLACE INTO covers(doc_id, data) VALUES(?1, ?2)",
+            params![doc_id, data],
+        )?;
+    }
+    tx.commit()?;
+    Ok(doc_id)
+}
+
+pub fn set_cover(conn: &Connection, doc_id: &str, data: &[u8]) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO covers(doc_id, data) VALUES(?1, ?2)",
+        params![doc_id, data],
+    )?;
+    Ok(())
+}
+
+pub fn cover(conn: &Connection, doc_id: &str) -> Result<Option<Vec<u8>>> {
+    Ok(conn
+        .query_row(
+            "SELECT data FROM covers WHERE doc_id = ?1",
+            params![doc_id],
+            |r| r.get(0),
+        )
+        .ok())
+}
+
+// ---------- 高亮、笔记、书签 ----------
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Annotation {
+    pub id: String,
+    pub doc_id: String,
+    /// highlight / bookmark
+    pub kind: String,
+    pub cfi: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub style: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub page: Option<i64>,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+    /// 只在列出时带上，方便跨文档展示
+    #[serde(default)]
+    pub doc_title: String,
+}
+
+/// 新建或修改（按 id）。创建时间只在第一次写入时定下来
+pub fn save_annotation(conn: &Connection, a: &Annotation) -> Result<()> {
+    let t = now();
+    conn.execute(
+        "INSERT INTO annotations(id, doc_id, kind, cfi, text, note, color, style, label, page, created_at, updated_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)
+         ON CONFLICT(id) DO UPDATE SET
+            cfi = excluded.cfi, text = excluded.text, note = excluded.note, color = excluded.color,
+            style = excluded.style, label = excluded.label, page = excluded.page, updated_at = excluded.updated_at",
+        params![a.id, a.doc_id, a.kind, a.cfi, a.text, a.note, a.color, a.style, a.label, a.page, t],
+    )?;
+    Ok(())
+}
+
+pub fn delete_annotation(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM annotations WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+/// doc_ids 为空时列出全部文档的
+pub fn list_annotations(conn: &Connection, doc_ids: Option<&[String]>) -> Result<Vec<Annotation>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id, a.doc_id, a.kind, a.cfi, a.text, a.note, a.color, a.style, a.label, a.page,
+                a.created_at, a.updated_at, d.title
+         FROM annotations a JOIN docs d ON d.id = a.doc_id
+         ORDER BY a.doc_id, a.created_at",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(Annotation {
+            id: r.get(0)?,
+            doc_id: r.get(1)?,
+            kind: r.get(2)?,
+            cfi: r.get(3)?,
+            text: r.get(4)?,
+            note: r.get(5)?,
+            color: r.get(6)?,
+            style: r.get(7)?,
+            label: r.get(8)?,
+            page: r.get(9)?,
+            created_at: r.get(10)?,
+            updated_at: r.get(11)?,
+            doc_title: r.get(12)?,
+        })
+    })?;
+    let mut out = rows.collect::<Result<Vec<_>, _>>()?;
+    if let Some(ids) = doc_ids.filter(|ids| !ids.is_empty()) {
+        out.retain(|a| ids.iter().any(|i| i == &a.doc_id));
+    }
+    Ok(out)
+}
+
+// ---------- 阅读进度 ----------
+
+#[derive(Debug, Serialize)]
+pub struct ReadingState {
+    pub location: Option<String>,
+    pub fraction: f64,
+}
+
+pub fn reading_state(conn: &Connection, doc_id: &str) -> Result<Option<ReadingState>> {
+    Ok(conn
+        .query_row(
+            "SELECT location, fraction FROM reading_state WHERE doc_id = ?1",
+            params![doc_id],
+            |r| {
+                Ok(ReadingState {
+                    location: r.get(0)?,
+                    fraction: r.get(1)?,
+                })
+            },
+        )
+        .ok())
+}
+
+pub fn save_reading_state(
+    conn: &Connection,
+    doc_id: &str,
+    location: &str,
+    fraction: f64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO reading_state(doc_id, location, fraction, updated_at) VALUES(?1,?2,?3,?4)",
+        params![doc_id, location, fraction, now()],
+    )?;
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -741,5 +996,81 @@ mod tests {
 
         delete_session(&conn, "s1").unwrap();
         assert!(get_messages(&conn, "s1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn 重新导入保留笔记和进度_删除文档时一起清掉() {
+        let mut conn = open_in_memory().unwrap();
+        let doc = NewDoc {
+            title: "书",
+            path: "/tmp/book.epub",
+            kind: "epub",
+            pages: None,
+            author: Some("某人"),
+            cover: Some(&[1, 2, 3]),
+        };
+        let chunk = |t: &str| TextChunk {
+            idx: 0,
+            page: Some(1),
+            text: t.to_string(),
+        };
+        let id = import_document(&mut conn, &doc, &[chunk("雨是从傍晚开始下的")]).unwrap();
+        let note = Annotation {
+            id: "a1".into(),
+            doc_id: id.clone(),
+            kind: "highlight".into(),
+            cfi: "epubcfi(/6/2!/4/2,/1:0,/1:5)".into(),
+            text: "雨是从傍晚".into(),
+            note: "开头".into(),
+            color: "yellow".into(),
+            style: "highlight".into(),
+            label: "第一章".into(),
+            page: None,
+            created_at: 0,
+            updated_at: 0,
+            doc_title: String::new(),
+        };
+        save_annotation(&conn, &note).unwrap();
+        save_annotation(
+            &conn,
+            &Annotation {
+                note: "改过的".into(),
+                ..note.clone()
+            },
+        )
+        .unwrap();
+        save_reading_state(&conn, &id, "epubcfi(/6/4)", 0.4).unwrap();
+
+        // 同一路径再导入：id 不变，内容换新，笔记和进度都在
+        let again = import_document(&mut conn, &doc, &[chunk("换了内容的正文")]).unwrap();
+        assert_eq!(again, id);
+        assert_eq!(search_text(&conn, "换了内容", 3, None).unwrap().len(), 1);
+        assert!(search_text(&conn, "傍晚开始", 3, None).unwrap().is_empty());
+        let notes = list_annotations(&conn, None).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].note, "改过的");
+        assert_eq!(notes[0].doc_title, "书");
+        assert_eq!(reading_state(&conn, &id).unwrap().unwrap().fraction, 0.4);
+        let docs = list_documents(&conn).unwrap();
+        assert_eq!(docs[0].author.as_deref(), Some("某人"));
+        assert!(docs[0].has_cover);
+        assert_eq!(docs[0].progress, Some(0.4));
+
+        // 没有文字的文档（漫画）也能入库
+        let comic = NewDoc {
+            title: "漫画",
+            path: "/tmp/c.cbz",
+            kind: "cbz",
+            pages: Some(20),
+            author: None,
+            cover: None,
+        };
+        import_document(&mut conn, &comic, &[]).unwrap();
+        assert_eq!(list_documents(&conn).unwrap().len(), 2);
+
+        delete_document(&mut conn, &id).unwrap();
+        assert!(list_annotations(&conn, None).unwrap().is_empty());
+        assert!(reading_state(&conn, &id).unwrap().is_none());
+        assert!(cover(&conn, &id).unwrap().is_none());
     }
 }

@@ -15,6 +15,12 @@ export function splitCitations(text: string): Part[] {
   return out;
 }
 
+/** 引用的位置说明：PDF 是页码；电子书的 page 存的是第几节 */
+export function pageLabel(docTitle: string, page: number | null | undefined): string {
+  if (!page) return "";
+  return /\.pdf$/i.test(docTitle) ? ` · 第 ${page} 页` : ` · 第 ${page} 节`;
+}
+
 /** 回答里实际引用到的编号（去重、升序） */
 export function citedNumbers(text: string): number[] {
   const set = new Set<number>();
