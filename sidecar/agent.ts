@@ -131,13 +131,26 @@ async function gate(tool: string, input: Record<string, unknown>): Promise<{ all
       const ok = await requestApproval(tool, input, "bash");
       return ok ? { allow: true } : { allow: false, reason: "用户拒绝运行这条命令" };
     }
-    case "WebFetch": {
+    case "WebFetch":
+    case "WebSearch": {
       if (granted.has("web")) return { allow: true };
       const ok = await requestApproval(tool, input, "web");
-      return ok ? { allow: true } : { allow: false, reason: "用户拒绝访问这个网址" };
+      return ok ? { allow: true } : { allow: false, reason: "用户拒绝了这次联网" };
     }
-    default:
-      return { allow: false, reason: "这个工具没有启用" };
+    // 子代理本身不碰外部世界，它内部的每次工具调用同样会过这个 gate
+    case "Task":
+    case "Agent":
+    case "TaskStop":
+    case "ListAgents":
+    case "Skill":
+      return { allow: true };
+    default: {
+      // 没单独定规则的工具：问用户，而不是直接拒绝
+      const key = `tool:${tool}`;
+      if (granted.has(key)) return { allow: true };
+      const ok = await requestApproval(tool, input, key);
+      return ok ? { allow: true } : { allow: false, reason: "用户没有允许使用这个工具" };
+    }
   }
 }
 
@@ -221,7 +234,7 @@ const docTools = createSdkMcpServer({
   ],
 });
 
-const RULES = `你运行在一个叫 DocAgent 的桌面应用里，是用户的通用助手：可以读写本地文件、搜索代码、运行命令、访问网页，也可以检索用户导入的文档库。
+const RULES = `你运行在一个叫 DocAgent 的桌面应用里，是用户的通用助手：可以读写本地文件、运行命令、联网搜索、访问网页、派子代理，也可以检索用户导入的文档库。
 
 关于用户导入的文档库（search_docs）：
 - 问题可能和用户的资料有关时先检索。文档内容和你的常识冲突时以文档为准。
@@ -229,9 +242,10 @@ const RULES = `你运行在一个叫 DocAgent 的桌面应用里，是用户的�
 - 不要把自身知识说成是文档里的，不要编造引用。
 
 做事方式：
-- 用户让你了解某个项目或目录时，直接用 Glob / Grep / Read 去看，不要说自己做不到。
-- 多步任务先用 TodoWrite 列出计划，做完一步勾一步。
-- 读取、写入、运行命令会由应用向用户请求许可；被拒绝就换个办法或者如实说明，不要反复重试同一个操作。
+- 用户让你了解某个项目或目录时，直接去看（Bash 里用 ls / rg / find，或用 Read 读文件），不要说自己做不到。
+- 需要最新信息或文档库、本地都没有的资料时，用 WebSearch 联网搜索，用 WebFetch 打开具体网页；引用网页内容时给出链接。
+- 任务大、可以拆开并行时，可以用 Task 派子代理去做。
+- 读取、写入、运行命令、联网会由应用向用户请求许可；被拒绝就换个办法或者如实说明，不要反复重试同一个操作。
 - 要交付文件时：用户指定了位置就用 Write 写到那里；没指定就用 save_note。
 - 用中文回答，简洁，适当使用 Markdown。`;
 
@@ -258,8 +272,9 @@ async function handleAsk(msg: {
         systemPrompt: { type: "preset", preset: "claude_code", append: RULES },
         cwd: HOME,
         mcpServers: { docagent: docTools },
-        // 启用的内置工具。联网搜索依赖模型供应商的服务端支持，这里不开。
-        tools: ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "WebFetch", "TodoWrite"],
+        // SDK 的全套内置工具（和 Claude Code 一样）：读写改文件、Bash、联网搜索、
+        // 抓网页、子代理、Notebook、Skill 等。能不能用由 gate 决定，不在这里删减。
+        tools: { type: "preset", preset: "claude_code" },
         includePartialMessages: true,
         maxTurns: 40,
         settingSources: [],
@@ -303,6 +318,7 @@ async function handleAsk(msg: {
         session = m.session_id;
         send({ type: "session", id, sessionId: session });
       } else if (m.type === "stream_event") {
+        if (m.parent_tool_use_id) continue; // 子代理的中间输出不混进主回答
         const ev = m.event;
         if (ev?.type === "content_block_delta" && ev.delta?.type === "text_delta") {
           answer += ev.delta.text;

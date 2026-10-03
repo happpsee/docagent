@@ -299,8 +299,18 @@ function describe(name: string, input: Record<string, unknown>): { label: string
       return { label: "运行", arg: String(input.description ?? input.command ?? ""), mono: !input.description };
     case "WebFetch":
       return { label: "访问网页", arg: String(input.url ?? "") };
-    default:
-      return { label: short, arg: "" };
+    case "WebSearch":
+      return { label: "联网搜索", arg: String(input.query ?? "") };
+    case "Task":
+    case "Agent":
+      return { label: "子代理", arg: String(input.description ?? input.prompt ?? "").slice(0, 80) };
+    case "NotebookEdit":
+      return { label: "修改 Notebook", arg: tilde(input.notebook_path), mono: true };
+    default: {
+      // 没有专门文案的工具：显示工具名和它的第一个文本参数
+      const first = Object.values(input).find((v) => typeof v === "string");
+      return { label: short, arg: String(first ?? "").slice(0, 100) };
+    }
   }
 }
 
@@ -328,11 +338,22 @@ function approvalCopy(name: string, input: Record<string, unknown>): { title: st
       return { title: "允许运行这条命令吗？", note: input.description ? String(input.description) : undefined, body: String(input.command ?? "") };
     case "WebFetch":
       return { title: "允许访问这个网址吗？", body: String(input.url ?? "") };
-    default:
+    case "WebSearch":
+      return { title: "允许联网搜索吗？", note: "搜索词会发给模型供应商的搜索服务", body: String(input.query ?? "") };
+    case "save_note":
       return {
         title: "允许保存这个文件吗？",
         note: `会写到「文稿/DocAgent/${String(input.filename ?? "")}」`,
         body: String(input.content ?? "").slice(0, 1500),
+      };
+    default:
+      return {
+        title: `允许使用「${short}」吗？`,
+        body: JSON.stringify(
+          Object.fromEntries(Object.entries(input).filter(([k]) => !k.startsWith("_"))),
+          null,
+          2,
+        ).slice(0, 1200),
       };
   }
 }
