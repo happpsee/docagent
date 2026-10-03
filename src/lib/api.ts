@@ -1,6 +1,13 @@
 /** Rust 命令的封装。前端只通过这里碰 Rust。 */
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { mockInvoke } from "./mock";
+/** 不在 Tauri 里（浏览器直接打开 dev server）时用假数据，方便调界面 */
+const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+export const isPreview = !inTauri;
+const invoke = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
+  inTauri ? tauriInvoke<T>(cmd, args) : mockInvoke<T>(cmd, args);
+
 import type { AgentEvent, Block, Doc, DocKind, Hit, Message, Session } from "./types";
 
 export async function addDocument(
@@ -88,5 +95,10 @@ export async function getMessages(sessionId: string): Promise<Message[]> {
 
 export const agentStart = () => invoke<void>("agent_start");
 export const agentSend = (payload: Record<string, unknown>) => invoke<void>("agent_send", { payload });
-export const onAgentEvent = (fn: (e: AgentEvent) => void): Promise<UnlistenFn> =>
-  listen<AgentEvent>("agent-event", (e) => fn(e.payload));
+export const onAgentEvent = (fn: (e: AgentEvent) => void): Promise<UnlistenFn> => {
+  if (!inTauri) {
+    setTimeout(() => fn({ type: "ready" }), 100);
+    return Promise.resolve(() => {});
+  }
+  return listen<AgentEvent>("agent-event", (e) => fn(e.payload));
+};

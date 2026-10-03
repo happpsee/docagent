@@ -177,6 +177,14 @@ export function App() {
     void (async () => {
       refreshDocs();
       refreshSessions();
+      // 浏览器预览：?chat 直接打开示例会话，方便看对话界面
+      if (api.isPreview && location.search.includes("chat")) {
+        const list = await api.listSessions();
+        if (list[0]) {
+          setMessages(await api.getMessages(list[0].id));
+          setCurrent(list[0]);
+        }
+      }
       try {
         const raw = await api.getSetting(SETTINGS_KEY);
         if (!raw) return setShowSettings(true);

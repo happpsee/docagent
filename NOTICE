@@ -2,7 +2,7 @@ DocAgent
 
 界面的设计系统与部分基础组件来自 ArcReel（AGPL-3.0）：
   - src/index.css（主题 token、玻璃面板、按钮等样式）
-  - src/components/ui/{PrimaryButton,SecondaryButton,ModalShell,GlassModal,AutoTextarea,ModalCloseButton}.tsx
+  - src/components/ui/{PrimaryButton,SecondaryButton,ModalShell,GlassModal,ModalCloseButton}.tsx
   - src/hooks/{useEscapeClose,useFocusTrap}.ts
   - src/components/StreamMarkdown.tsx（按其实现改写）
 

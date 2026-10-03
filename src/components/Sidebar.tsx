@@ -176,7 +176,7 @@ export function Sidebar(p: Props) {
         onClick={p.onOpenSettings}
       >
         <span className={`h-1.5 w-1.5 rounded-full ${tone}`} />
-        <span className="num min-w-0 flex-1 truncate">{p.status.text}</span>
+        <span className="min-w-0 flex-1 truncate">{p.status.text}</span>
         <SettingsIcon className="h-3.5 w-3.5 text-text-4" />
       </button>
     </aside>

@@ -659,3 +659,137 @@ button:not(:disabled):not([data-no-press]),
     mask-image: linear-gradient(to right, transparent, black 28px, black calc(100% - 28px), transparent);
     -webkit-mask-image: linear-gradient(to right, transparent, black 28px, black calc(100% - 28px), transparent);
 }
+
+/* ============================================================
+   DocAgent 暖色主题：覆盖上面的冷调 token。
+   纸感的米白底、暖灰描边、赤陶色强调，标题用衬线体。
+   只改 token 的值，组件和工具类不动。
+   ============================================================ */
+:root {
+    --color-bg: #faf9f5;
+    --color-bg-grad-a: #faf9f5;
+    --color-bg-grad-b: #f3f1ea;
+    --color-surface-2: #ffffff;
+    --color-sidebar-surface: #f3f1ea;
+    --color-glass-from: #fffffff2;
+    --color-glass-to: #fbfaf6f2;
+
+    --color-nav-card: #1f1e1d0a;
+    --color-nav-card-hover: #1f1e1d10;
+    --color-nav-card-active: #1f1e1d14;
+    --color-segment-bg: #efede4;
+    --color-track-idle: #1f1e1d1f;
+
+    --color-hairline: #e6e3d8;
+    --color-hairline-strong: #d6d2c4;
+    --color-hairline-soft: #ece9df;
+
+    --color-text: #2b2a27;
+    --color-text-2: #55524a;
+    --color-text-3: #7a766b;
+    --color-text-4: #a39f92;
+
+    --color-accent: #c96442;
+    --color-accent-2: #b5573a;
+    --color-accent-soft: #c9644229;
+    --color-accent-dim: #c9644214;
+    --color-accent-glow: #c9644233;
+    --color-on-accent: #ffffff;
+
+    --color-good: #4f8a5b;
+    --color-warm: #b07d2a;
+    --color-warm-bright: #a37225;
+    --color-warm-ring: #b07d2a59;
+    --color-warm-tint-faint: #b07d2a0f;
+    --color-danger: #b8473d;
+    --color-danger-soft: #b8473d1a;
+    --color-danger-ring: #b8473d59;
+
+    --color-scrollbar: #1f1e1d26;
+    --color-scrollbar-hover: #1f1e1d40;
+
+    --font-sans: -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+    --font-display: "Iowan Old Style", "Palatino", "Songti SC", "Noto Serif SC", "Source Han Serif SC", Georgia, serif;
+}
+
+.dark {
+    --color-bg: #262624;
+    --color-bg-grad-a: #262624;
+    --color-bg-grad-b: #1f1e1d;
+    --color-surface-2: #30302e;
+    --color-sidebar-surface: #1f1e1d;
+    --color-glass-from: #30302ef2;
+    --color-glass-to: #2a2a28f2;
+
+    --color-nav-card: #ffffff0d;
+    --color-nav-card-hover: #ffffff14;
+    --color-nav-card-active: #ffffff1c;
+    --color-segment-bg: #1f1e1d;
+    --color-track-idle: #ffffff24;
+
+    --color-hairline: #3d3d3a;
+    --color-hairline-strong: #4d4c48;
+    --color-hairline-soft: #353532;
+
+    --color-text: #f3f1ea;
+    --color-text-2: #c8c5b9;
+    --color-text-3: #a09d92;
+    --color-text-4: #7b786f;
+
+    --color-accent: #d97757;
+    --color-accent-2: #c96442;
+    --color-accent-soft: #d9775733;
+    --color-accent-dim: #d977571f;
+    --color-accent-glow: #d9775740;
+
+    --color-good: #7fb88a;
+    --color-warm: #d4a24a;
+    --color-warm-bright: #d4a24a;
+    --color-warm-tint-faint: #d4a24a14;
+    --color-danger: #e0786d;
+    --color-danger-soft: #e0786d24;
+
+    --color-scrollbar: #ffffff26;
+    --color-scrollbar-hover: #ffffff40;
+}
+
+/* 纯色背景：去掉原主题的辉光渐变 */
+body, .dark body { background: var(--color-bg); }
+
+/* 主按钮改成实色，不要渐变和光晕 */
+.arc-btn-primary {
+    background: var(--color-accent);
+    box-shadow: none;
+}
+.arc-btn-primary:hover:not(:disabled) { background: var(--color-accent-2); transform: none; }
+
+/* 正文排版：行距放松，标题用衬线 */
+.markdown-body h1, .markdown-body h2, .markdown-body h3 { font-family: var(--font-display); letter-spacing: -0.01em; }
+.markdown-body { font-size: 15px; line-height: 1.75; }
+::selection { background: var(--color-accent-soft); }
+
+/* streamdown（Markdown 渲染）内部用的是 shadcn 的颜色名，映射到我们的 token；
+   并让 Tailwind 扫描它的产物，否则它用到的工具类不会生成 */
+@source "../node_modules/streamdown/dist";
+@theme inline {
+    --color-border: var(--color-hairline);
+    --color-background: var(--color-surface-2);
+    --color-foreground: var(--color-text);
+    --color-muted: var(--color-segment-bg);
+    --color-muted-foreground: var(--color-text-3);
+    --color-primary: var(--color-accent);
+    --color-primary-foreground: #ffffff;
+    --color-ring: var(--color-accent);
+    --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
+}
+
+/* 表格：细线、表头浅底、圆角，去掉默认的最大高度滚动 */
+.markdown-body [data-streamdown="table"] { font-size: 14px; }
+.markdown-body [data-streamdown="table-header-cell"] { font-weight: 600; color: var(--color-text-2); font-size: 13px; }
+.markdown-body [data-streamdown="table-cell"] { padding: 9px 16px; vertical-align: top; }
+.markdown-body p { margin: 0.6em 0; }
+.markdown-body p:first-child { margin-top: 0; }
+.markdown-body p:last-child { margin-bottom: 0; }
+.markdown-body code:not(pre code) {
+    background: var(--color-segment-bg); padding: 1px 5px; border-radius: 5px; font-size: 0.9em;
+}

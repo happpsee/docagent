@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, ChevronRight, FileText, Loader2, Square } from "lucide-react";
+import { ChevronRight, Loader2 } from "lucide-react";
 import { citedNumbers } from "@/lib/citations";
 import type { Block, Hit, Message } from "@/lib/types";
 import { StreamMarkdown } from "./StreamMarkdown";
-import { AutoTextarea } from "./ui/AutoTextarea";
+import { Composer } from "./Composer";
 
 interface Props {
   title: string | null;
@@ -38,50 +38,68 @@ export function ChatPanel(p: Props) {
     p.onSend(q);
   }
 
-  const empty = p.messages.length === 0;
+  const composer = (
+    <Composer
+      value={input}
+      onChange={setInput}
+      onSubmit={() => submit()}
+      onStop={p.onStop}
+      busy={p.busy}
+      ready={p.ready}
+      model={p.model}
+      docCount={p.docCount}
+      scopeCount={p.scopeCount}
+      autoFocus
+    />
+  );
+
+  // 空状态：问候语和输入框一起居中，像一张信纸的开头
+  if (p.messages.length === 0) {
+    const hour = new Date().getHours();
+    const hello = hour < 6 ? "夜深了" : hour < 12 ? "早上好" : hour < 18 ? "下午好" : "晚上好";
+    return (
+      <section className="flex min-w-0 flex-1 flex-col items-center justify-center px-6 pb-[8vh]">
+        <div className="w-full max-w-[680px]">
+          <h1 className="display-serif flex items-center justify-center gap-3 text-[32px] tracking-tight text-text">
+            <span className="text-accent">✳</span>
+            {hello}，想了解点什么？
+          </h1>
+          <div className="mt-7">{composer}</div>
+          {p.docCount > 0 ? (
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              {SUGGESTIONS.map((s) => (
+                <button
+                  key={s}
+                  className="rounded-full border border-hairline bg-surface-2/60 px-3.5 py-1.5 text-[13px] text-text-2 hover:border-hairline-strong hover:bg-surface-2 hover:text-text"
+                  onClick={() => submit(s)}
+                  disabled={!p.ready}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-4 text-center text-[13px] text-text-3">
+              可以直接聊。点左侧「文档」旁的 + 导入资料后，我会优先从里面找答案并标出出处。
+            </p>
+          )}
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="flex min-w-0 flex-1 flex-col">
       {p.title && (
-        <header className="truncate border-b border-hairline-soft px-6 py-2.5 text-[13px] text-text-2">
-          {p.title}
-        </header>
+        <header className="truncate px-6 py-3 text-[13px] text-text-3">{p.title}</header>
       )}
 
       <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-[760px] flex-col gap-5 px-6 py-7">
-          {empty && (
-            <div className="mt-[16vh]">
-              <h1 className="display-serif text-[26px] font-semibold tracking-tight text-text">
-                有什么想了解的？
-              </h1>
-              <p className="mt-2 text-[13px] leading-6 text-text-3">
-                {p.docCount
-                  ? "会优先从你的文档里找答案，并标出出处；文档没讲到的，我用自己的知识补充并说明。"
-                  : "可以直接聊。导入文档后，我会优先从你的资料里找答案并标出出处。"}
-              </p>
-              {p.docCount > 0 && (
-                <div className="mt-5 flex flex-col items-start gap-1.5">
-                  {SUGGESTIONS.map((s) => (
-                    <button
-                      key={s}
-                      className="rounded-lg px-2.5 py-1.5 text-left text-[13px] text-text-2 hover:bg-nav-card hover:text-text"
-                      onClick={() => submit(s)}
-                      disabled={!p.ready}
-                    >
-                      <span className="mr-2 text-text-4">→</span>
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
+        <div className="mx-auto flex max-w-[740px] flex-col gap-6 px-6 pb-8 pt-2">
           {p.messages.map((m, i) =>
             m.role === "user" ? (
               <div key={i} className="flex justify-end">
-                <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-nav-card-active px-4 py-2.5 text-[14px] leading-6 text-text">
+                <div className="max-w-[85%] whitespace-pre-wrap rounded-[18px] bg-segment-bg px-4 py-2.5 text-[15px] leading-6 text-text">
                   {m.content}
                 </div>
               </div>
@@ -99,52 +117,10 @@ export function ChatPanel(p: Props) {
         </div>
       </div>
 
-      <div className="mx-auto w-full max-w-[760px] px-6 pb-4">
-        <div className="rounded-2xl border border-hairline-strong bg-surface-2 shadow-sm focus-within:border-accent">
-          <AutoTextarea
-            value={input}
-            onChange={setInput}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-            rows={2}
-            aria-label="输入消息"
-            placeholder={p.ready ? "问点什么，或者让我帮你整理资料…" : "先在左下角「设置」里配置模型"}
-            className="max-h-52 w-full resize-none bg-transparent px-4 pt-3.5 text-[14px] leading-6 text-text outline-none placeholder:text-text-4"
-            disabled={!p.ready}
-          />
-          <div className="flex items-center gap-2 px-3 pb-2.5 pt-1">
-            <span className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-text-3">
-              <FileText className="h-3.5 w-3.5" />
-              {p.docCount === 0 ? "没有文档" : p.scopeCount ? `已选 ${p.scopeCount} 份文档` : `全部 ${p.docCount} 份文档`}
-            </span>
-            <span className="flex-1" />
-            <span className="num text-[11px] text-text-4">{p.model}</span>
-            {p.busy ? (
-              <button
-                aria-label="停止"
-                onClick={p.onStop}
-                className="grid h-8 w-8 place-items-center rounded-lg bg-text text-bg"
-              >
-                <Square className="h-3 w-3" fill="currentColor" />
-              </button>
-            ) : (
-              <button
-                aria-label="发送"
-                onClick={() => submit()}
-                disabled={!input.trim() || !p.ready}
-                className="grid h-8 w-8 place-items-center rounded-lg bg-accent text-white disabled:bg-track-idle disabled:text-text-4"
-              >
-                <ArrowUp className="h-4 w-4" />
-              </button>
-            )}
-          </div>
-        </div>
+      <div className="mx-auto w-full max-w-[740px] px-6 pb-3">
+        {composer}
         <p className="mt-2 text-center text-[11px] text-text-4">
-          回答可能出错。带编号的结论来自你的文档，可以点开核对原文。
+          回答可能出错。带编号的结论来自你的文档，点开可以核对原文。
         </p>
       </div>
     </section>
@@ -170,7 +146,7 @@ function Assistant({
     <div className="flex flex-col gap-2.5">
       {blocks.map((b, i) =>
         b.type === "text" ? (
-          <div key={i} className={`text-[14px] leading-7 ${m.error ? "text-danger" : "text-text"}`}>
+          <div key={i} className={`text-[15px] leading-7 ${m.error ? "text-danger" : "text-text"}`}>
             <StreamMarkdown content={b.text} />
           </div>
         ) : (
