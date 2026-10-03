@@ -4,3 +4,5 @@
 /src-tauri/gen/schemas
 .DS_Store
 *.local
+/src-tauri/binaries
+/sidecar/node_modules

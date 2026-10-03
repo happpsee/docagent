@@ -1,82 +1,78 @@
 # DocAgent
 
-本地文档智能体工作台：资料留在自己电脑上，带引用溯源的问答，工具调用要你点同意。
+本地文档智能体工作台：导入资料，向它提问，每个结论都能点回原文。
 
-Tauri 2 + React 19 + TypeScript，向量检索用 SQLite 的 sqlite-vec 扩展。打包后 8 MB。
+Tauri 2 + React + Rust，agent 用 Claude Agent SDK，向量检索用 SQLite 的 sqlite-vec。
 
-## 它能做什么
+## 能做什么
 
-- **导入文档**：PDF / DOCX / Markdown / TXT，拖进来自动解析、分块、建向量索引
-- **问答**：问题走语义检索，回答只依据检索到的材料
-- **引用溯源**：回答里的 `[1]` 可以点，右侧直接渲染 PDF 对应页面并高亮原文片段
-- **知道自己不知道**：检索不到相关内容就明说没有，不编
-- **工具调用需审批**：助手要保存文件时弹窗展示参数，你点同意才执行
-- **多轮检索**：模型可以自己换关键词再查（最多 3 轮），不是一次检索定生死
+- **导入** PDF / DOCX / Markdown / TXT，自动解析、分块、建索引
+- **提问**：agent 自己决定检索什么、要不要换个说法再查，流式输出 Markdown
+- **引用溯源**：回答下方的引用可以点开，看到原文片段；PDF 会渲染那一页
+- **拒答**：资料里没有就明说没有，不编
+- **审批**：助手要保存文件时先弹窗给你看内容，同意了才写
+- **会话持久化**：对话存在本地，关掉重开能接着聊（上下文也在）
 - **范围限定**：勾选文档后只在选中的资料里检索
-- **出站请求可查**：面板里列出本次会话全部网络请求，全本地模式下应该是空的
-
-## 两种运行模式
-
-| | 向量化 | 回答 | 需要 API Key | 出网 |
-|---|---|---|---|---|
-| **全本地**（默认） | 本地哈希向量 | 摘录原文 | 不需要 | 零请求 |
-| **接接口** | embedding 接口 | 大模型生成 | 需要 | 只调模型接口 |
-
-默认是全本地模式，装上就能用。本地哈希向量只做字面匹配、不理解语义，实测相关片段和无关片段的相似度差约 3.6 倍，够用来排序和判断"有没有命中"，但质量和真正的 embedding 差距明显——正式使用建议在设置里切到接口模式（任何 OpenAI 兼容接口都行，包括本地 Ollama 的 `/v1`）。
-
-## 跑起来
-
-```bash
-pnpm install
-pnpm tauri dev          # 开发模式（必须在项目根目录跑）
-pnpm tauri build        # 打包出 .app 和 .dmg
-```
-
-测试：
-
-```bash
-pnpm test                       # 前端：分块、向量、引用解析、检索流水线
-cd src-tauri && cargo test      # Rust：建库、写入、向量检索、删除、维度校验
-pnpm typecheck
-```
-
-## 手动验收步骤
-
-1. 打开应用 → 左上角应显示「全本地模式」
-2. 点 **+ 导入**，选 `test-docs/` 里的两份合同
-3. 问「质保期多久」→ 回答应摘出质保条款，带 `[1]` 引用
-4. 点 `[1]` → 右侧出现原文片段（PDF 还会渲染对应页面）
-5. 问「推荐一首歌」→ 应回答「资料里没有找到相关内容」
-6. 点右上角 **出站记录** → 应该是空的（全本地模式没有任何网络请求）
-7. 去设置填接口地址和 Key，把两个模式都切成接口/大模型，清空索引重新导入
-8. 再问一次 → 这次是模型生成的回答，出站记录里会出现对模型接口的请求
 
 ## 结构
 
 ```
-src/                      前端
-  lib/parse.ts            文档解析（PDF 用 pdf.js 拿页码，DOCX 用 mammoth）
-  lib/chunk.ts            分块：按段落聚合到约 800 字，块间留重叠
-  lib/provider.ts         模型供应商 + 本地哈希向量 + 出站请求记录
-  lib/rag.ts              检索、组装材料、工具调用闭环、引用解析
-  lib/api.ts              Rust 命令的封装
-  components/             文档面板 / 对话 / 引用视图 / 设置 / 出站记录
-src-tauri/
-  src/db.rs               SQLite + sqlite-vec：文档、分块、向量索引
-  src/commands.rs         暴露给前端的命令
-  src/lib.rs              应用装配
+WebView（React）  ←Tauri 命令/事件→  Rust  ←stdin/stdout JSON→  sidecar
+                                      │                          （bun 单文件，内含 Agent SDK）
+                                      └── SQLite + sqlite-vec          │
+                                               ↑                       │
+                                               └── 127.0.0.1 本地接口 ──┘
 ```
 
-**职责划分**：Rust 管存储和文件，前端管解析和模型调用。这样换 embedding 或换模型供应商不用动 Rust。
+- **Rust**（`src-tauri/`）：存储（文档、向量、会话）、文件读写、管理 sidecar 进程
+- **sidecar**（`sidecar/agent.ts`）：agent 循环、工具调用、会话续接，全部交给 Claude Agent SDK
+- **前端**（`src/`）：文档解析（pdf.js / mammoth）和界面
+
+sidecar 的工具（检索、保存）通过只绑本机、带一次性 token 的 HTTP 接口调回 Rust。
+
+## 跑起来
+
+需要 Rust、Node 22+、pnpm、bun。
+
+```bash
+pnpm install && (cd sidecar && bun install)
+pnpm tauri dev
+```
+
+首次打开在「设置」里填接口地址、API Key 和模型名（任何 Anthropic 兼容接口）。
+
+打包：
+
+```bash
+(cd sidecar && bun run compile)   # sidecar 编成单文件，约 75 MB
+pnpm tauri build
+```
+
+## 测试
+
+```bash
+pnpm test                                   # 前端：分块、引用解析
+cd src-tauri && cargo test                  # Rust：索引、检索、会话、文件名净化
+DOCAGENT_TEST_KEY=sk-... cargo test --test e2e -- --ignored --nocapture
+```
+
+最后一条是端到端测试，用真实模型走完：导入 → 提问带引用 → 续聊 → 拒答 → 拒绝审批不落盘 → 同意审批落盘。
+
+## 数据去哪了
+
+- 文档、索引、会话、设置：全在本机 `~/Library/Application Support/dev.local.docagent/`
+- **出网的只有一样**：提问时，问题和检索命中的片段会发给你配置的模型接口
+- agent 的配置目录是 app 自己的，不读也不写你的 `~/.claude`
+- agent 只有两个工具（检索、保存），内置的文件读写、shell、联网工具全部关闭
+- 保存的文件固定写到 `文稿/DocAgent/`，文件名里的路径成分会被去掉
 
 ## 已知限制
 
-- 扫描版 PDF 没有文字层，需要 OCR，当前版本不支持（会明确报错）
-- 本地哈希向量是字面匹配，同义不同词查不到
-- 换 embedding 模型后维度不匹配，需要在设置里清空索引重建
-- macOS 包未做签名公证，首次打开要在「系统设置 → 隐私与安全性」里允许
-- API Key 存在本机 SQLite 里（明文），不上传任何地方
+- 向量是本地哈希（字符 n-gram），只做字面匹配，同义不同词可能查不到；靠 agent 多次换词检索来弥补
+- 扫描版 PDF 没有文字层，需要 OCR，暂不支持
+- macOS 包未签名，首次打开要在「系统设置 → 隐私与安全性」里允许
+- API Key 明文存在本机数据库里
 
 ## 许可
 
-Apache-2.0
+AGPL-3.0。界面的设计系统来自 ArcReel，见 [NOTICE](NOTICE)。

@@ -1,39 +1,22 @@
 /** Rust 命令的封装。前端只通过这里碰 Rust。 */
 import { invoke } from "@tauri-apps/api/core";
-import type { ChunkIn, Doc, DocKind, SearchHit } from "./types";
-
-interface RawDoc {
-  id: string;
-  title: string;
-  path: string | null;
-  kind: string;
-  pages: number | null;
-  chunk_count: number;
-  created_at: number;
-}
-
-interface RawHit {
-  chunk_id: number;
-  doc_id: string;
-  doc_title: string;
-  idx: number;
-  page: number | null;
-  text: string;
-  distance: number;
-}
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { AgentEvent, Doc, DocKind, Hit, Message, Session, ToolCall } from "./types";
 
 export async function addDocument(
   title: string,
   path: string | null,
   kind: DocKind,
   pages: number | null,
-  chunks: ChunkIn[],
+  chunks: { idx: number; page: number | null; text: string }[],
 ): Promise<string> {
   return invoke<string>("add_document", { title, path, kind, pages, chunks });
 }
 
 export async function listDocuments(): Promise<Doc[]> {
-  const raw = await invoke<RawDoc[]>("list_documents");
+  const raw = await invoke<
+    { id: string; title: string; path: string | null; kind: string; pages: number | null; chunk_count: number; created_at: number }[]
+  >("list_documents");
   return raw.map((d) => ({
     id: d.id,
     title: d.title,
@@ -45,38 +28,58 @@ export async function listDocuments(): Promise<Doc[]> {
   }));
 }
 
-export async function deleteDocument(docId: string): Promise<void> {
-  await invoke("delete_document", { docId });
-}
-
-export async function search(
-  embedding: number[],
-  k: number,
-  docIds?: string[],
-): Promise<SearchHit[]> {
-  const raw = await invoke<RawHit[]>("search", { embedding, k, docIds: docIds ?? null });
-  return raw.map((h) => ({
-    chunkId: h.chunk_id,
-    docId: h.doc_id,
-    docTitle: h.doc_title,
-    idx: h.idx,
-    page: h.page,
-    text: h.text,
-    distance: h.distance,
-  }));
-}
-
-export const getSetting = (key: string) => invoke<string | null>("get_setting", { key });
-export const setSetting = (key: string, value: string) => invoke<void>("set_setting", { key, value });
+export const deleteDocument = (docId: string) => invoke<void>("delete_document", { docId });
 export const resetIndex = () => invoke<void>("reset_index");
 export const readFileBytes = (path: string) => invoke<number[]>("read_file_bytes", { path });
+export const getSetting = (key: string) => invoke<string | null>("get_setting", { key });
+export const setSetting = (key: string, value: string) => invoke<void>("set_setting", { key, value });
 export const dbInfo = () =>
-  invoke<{
-    docs: number;
-    chunks: number;
-    embeddingDim: string | null;
-    dbPath: string;
-    dbSizeBytes: number;
-  }>("db_info");
-export const writeFileText = (path: string, content: string) =>
-  invoke<void>("write_file_text", { path, content });
+  invoke<{ docs: number; chunks: number; sessions: number; dbPath: string; dbSizeBytes: number; saveDir: string }>("db_info");
+
+// ---------- 会话 ----------
+
+export async function listSessions(): Promise<Session[]> {
+  const raw = await invoke<
+    { id: string; sdk_session_id: string | null; title: string; updated_at: number }[]
+  >("list_sessions");
+  return raw.map((s) => ({ id: s.id, sdkSessionId: s.sdk_session_id, title: s.title, updatedAt: s.updated_at }));
+}
+
+export const upsertSession = (id: string, title: string, sdkSessionId: string | null) =>
+  invoke<void>("upsert_session", { id, title, sdkSessionId });
+export const deleteSession = (id: string) => invoke<void>("delete_session", { id });
+
+interface MessageMeta {
+  hits?: Hit[];
+  tools?: ToolCall[];
+  costUsd?: number | null;
+  error?: boolean;
+}
+
+export const addMessage = (sessionId: string, m: Message) =>
+  invoke<number>("add_message", {
+    sessionId,
+    role: m.role,
+    content: m.content,
+    meta: JSON.stringify({ hits: m.hits, tools: m.tools, costUsd: m.costUsd, error: m.error } satisfies MessageMeta),
+  });
+
+export async function getMessages(sessionId: string): Promise<Message[]> {
+  const raw = await invoke<{ role: string; content: string; meta: string | null }[]>("get_messages", { sessionId });
+  return raw.map((r) => {
+    let meta: MessageMeta = {};
+    try {
+      meta = r.meta ? (JSON.parse(r.meta) as MessageMeta) : {};
+    } catch {
+      // 旧数据或损坏的 meta，当作没有
+    }
+    return { role: r.role as Message["role"], content: r.content, ...meta };
+  });
+}
+
+// ---------- agent ----------
+
+export const agentStart = () => invoke<void>("agent_start");
+export const agentSend = (payload: Record<string, unknown>) => invoke<void>("agent_send", { payload });
+export const onAgentEvent = (fn: (e: AgentEvent) => void): Promise<UnlistenFn> =>
+  listen<AgentEvent>("agent-event", (e) => fn(e.payload));

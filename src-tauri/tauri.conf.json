@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost https://* http://localhost:* http://127.0.0.1:*"
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
   "bundle": {
@@ -36,8 +36,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "copyright": "Apache-2.0",
+    "copyright": "AGPL-3.0",
     "shortDescription": "本地文档智能体工作台",
-    "longDescription": "资料不出本机的文档问答工作台：本地索引、带引用溯源的回答、可审批的工具调用。"
+    "longDescription": "资料不出本机的文档问答工作台：本地索引、带引用溯源的回答、可审批的工具调用。",
+    "externalBin": [
+      "binaries/docagent-agent"
+    ]
   }
 }

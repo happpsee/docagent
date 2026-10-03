@@ -1,18 +1,29 @@
 //! DocAgent：本地文档智能体工作台。
 //!
-//! Rust 侧只负责三件事：SQLite 存储（文档、分块、向量索引）、文件读取、窗口。
-//! 文档解析、embedding、模型调用都在前端（TS）做——这样换模型供应商不用改 Rust。
+//! 进程划分：
+//! - Rust（这里）：SQLite 存储（文档、向量索引、会话）、文件读写、管理 sidecar
+//! - sidecar（bun 单文件，内含 Claude Agent SDK）：agent 循环、工具调用、会话续接
+//! - WebView：界面
+//!
+//! sidecar 的工具通过只绑本机的 HTTP 接口调回 Rust 做检索和保存。
 
+pub mod agent;
 pub mod commands;
 pub mod db;
+pub mod embed;
+pub mod server;
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 pub struct AppState {
-    pub conn: Mutex<rusqlite::Connection>,
+    pub conn: Arc<Mutex<rusqlite::Connection>>,
     pub db_path: PathBuf,
+    pub save_dir: PathBuf,
+    pub api_port: u16,
+    pub api_token: String,
+    pub agent: Mutex<Option<agent::Agent>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -20,14 +31,26 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // 数据目录由 Tauri 给出（macOS: ~/Library/Application Support/<identifier>）
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let db_path = dir.join("docagent.db");
-            let conn = db::open(&db_path)?;
+            let conn = Arc::new(Mutex::new(db::open(&db_path)?));
+
+            // agent 保存的文件统一放这里，不让它决定路径
+            let save_dir = app
+                .path()
+                .document_dir()
+                .unwrap_or_else(|_| dir.clone())
+                .join("DocAgent");
+            let api = server::start(conn.clone(), save_dir.clone())?;
+
             app.manage(AppState {
-                conn: Mutex::new(conn),
+                conn,
                 db_path,
+                save_dir,
+                api_port: api.port,
+                api_token: api.token,
+                agent: Mutex::new(None),
             });
             Ok(())
         })
@@ -35,13 +58,18 @@ pub fn run() {
             commands::add_document,
             commands::list_documents,
             commands::delete_document,
-            commands::search,
-            commands::get_setting,
-            commands::set_setting,
             commands::reset_index,
             commands::read_file_bytes,
+            commands::get_setting,
+            commands::set_setting,
             commands::db_info,
-            commands::write_file_text,
+            commands::list_sessions,
+            commands::upsert_session,
+            commands::delete_session,
+            commands::add_message,
+            commands::get_messages,
+            commands::agent_start,
+            commands::agent_send,
         ])
         .run(tauri::generate_context!())
         .expect("启动失败");

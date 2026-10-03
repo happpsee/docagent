@@ -1,0 +1,13 @@
+{
+  "name": "docagent-sidecar",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run agent.ts",
+    "compile": "bun build --compile --minify --bytecode agent.ts --outfile ../src-tauri/binaries/docagent-agent"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.288",
+    "zod": "^4.1.13"
+  }
+}

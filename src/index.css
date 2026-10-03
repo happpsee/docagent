@@ -1,0 +1,661 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+    /* ============================================================
+       浅色主题（默认）· "成片展厅 / 画廊白"
+       暗色值见下方 .dark 覆盖块。所有走令牌的组件随之自动切换；
+       组件内联硬编码 oklch（P3）不在此列，需逐处迁移。
+       ============================================================ */
+
+    /* 工作台基础色 — 画廊白 */
+    --color-bg: oklch(0.985 0.002 265);
+    --color-bg-grad-a: oklch(0.992 0.001 265);
+    --color-bg-grad-b: oklch(0.966 0.003 265);
+    --color-surface-2: oklch(1 0 0);
+
+    /* 后期页与侧栏的块面色。
+       设计稿只出了暗色版，这些值的暗色对应项在 .dark 里是稿上原值；
+       亮色是按同样的层次关系（比背景略深一档）推的——直接写死稿上的深色，
+       白天模式下侧栏会整块发黑、BGM 文件名白字白底（出品人 2026-09-24 反馈）。 */
+    --color-sidebar-surface: linear-gradient(180deg, oklch(1 0 0 / 0.72) 0%, oklch(0.985 0.002 265 / 0.72) 100%);
+    --color-step-active-line: oklch(0.90 0.005 265);
+    --color-episode-card: oklch(0.985 0.002 265);
+    --color-episode-track: oklch(0.90 0.005 265);
+    --color-nav-card: oklch(0.955 0.004 265 / 0.75);
+    --color-nav-card-hover: oklch(0.930 0.005 265 / 0.9);
+    --color-nav-card-active: oklch(0.910 0.006 265 / 0.95);
+    --color-nav-icon: linear-gradient(135deg, oklch(0.940 0.006 265) 6%, oklch(0.900 0.008 265) 100%);
+    --color-bgm-card: linear-gradient(180deg, oklch(0.62 0.13 295 / 0.10) 0%, oklch(0.62 0.13 295 / 0.05) 100%);
+    --color-bgm-card-line: oklch(0.62 0.13 295 / 0.28);
+    --color-bgm-art: linear-gradient(135deg, oklch(0.2 0.01 265 / 0.06) 4%, oklch(0.2 0.01 265 / 0.09) 100%);
+    --color-bgm-art-line: oklch(0.2 0.01 265 / 0.10);
+    --color-bgm-art-hover: oklch(0.2 0.01 265 / 0.14);
+    --color-track-idle: oklch(0.2 0.01 265 / 0.12);
+    /* BGM / 关键音效 的分段切换器（稿 1486:80973）。稿是深色底 #090B0F，
+       亮色下照抄会是一块黑，故只把「选中块的紫」保持原值，底与文字另给一套。 */
+    --color-segment-bg: oklch(0.966 0.003 265);
+    --color-segment-line: oklch(0.88 0.006 265 / 0.9);
+    --color-segment-ink: oklch(0.420 0.012 265);
+    --color-skeleton-a: oklch(0.2 0.01 265 / 0.05);
+    --color-skeleton-b: oklch(0.2 0.01 265 / 0.11);
+
+    /* 描边 */
+    --color-hairline: oklch(0.90 0.005 265 / 0.9);
+    --color-hairline-strong: oklch(0.83 0.007 265 / 0.9);
+    --color-hairline-soft: oklch(0.92 0.004 265 / 0.6);
+
+    /* 文字四档 — 墨色（非纯黑，留呼吸感） */
+    --color-text: oklch(0.245 0.010 265);
+    --color-text-2: oklch(0.420 0.012 265);
+    --color-text-3: oklch(0.495 0.013 265);
+    --color-text-4: oklch(0.565 0.012 265);
+
+    /* Accent — 紫（压深以在白底上站得住） */
+    --color-accent: oklch(0.52 0.15 295);
+    --color-accent-2: oklch(0.46 0.16 295);
+    /* 语音入口专用色：与 accent 同冷调但偏蓝，让「说话」和「发送」一眼分得开 */
+    --color-voice: oklch(0.62 0.15 250);
+    --color-voice-2: oklch(0.55 0.16 250);
+    --color-accent-soft: oklch(0.52 0.15 295 / 0.14);
+    --color-accent-dim: oklch(0.52 0.15 295 / 0.07);
+    --color-accent-glow: oklch(0.52 0.15 295 / 0.20);
+
+    /* 状态色 — 降亮适配白底 */
+    --color-good: oklch(0.55 0.13 155);
+    --color-warn: oklch(0.62 0.13 70);
+    --color-danger: oklch(0.55 0.20 25);
+
+    /* 暖色调（琥珀） */
+    --color-warm: oklch(0.60 0.13 70);
+    --color-warm-bright: oklch(0.54 0.14 70);
+    --color-warm-fade: oklch(0.60 0.13 70 / 0.5);
+    --color-warm-soft: oklch(0.60 0.13 70 / 0.10);
+    --color-warm-tint: oklch(0.60 0.13 70 / 0.14);
+    --color-warm-tint-faint: oklch(0.60 0.13 70 / 0.05);
+    --color-warm-ring: oklch(0.60 0.13 70 / 0.35);
+    --color-warm-glow: oklch(0.60 0.13 70 / 0.28);
+
+    /* 危险色（高亮变体） */
+
+    --color-danger-2: oklch(0.55 0.20 25);
+    --color-danger-bright: oklch(0.48 0.21 25);
+    --color-danger-soft: oklch(0.55 0.20 25 / 0.10);
+    --color-danger-ring: oklch(0.55 0.20 25 / 0.35);
+    --color-danger-glow: oklch(0.55 0.20 25 / 0.28);
+
+    /* 双主题语义 token（新增，供 chrome 跟随切换） */
+    --color-on-accent: oklch(0.99 0 0);             /* accent 表面上的文字 */
+    --color-overlay: oklch(0.25 0.01 265 / 0.05);   /* hover 覆盖洗色 */
+    --color-glass-from: oklch(1 0 0 / 0.92);
+    --color-glass-to: oklch(0.98 0.002 265 / 0.92);
+    --color-card-from: oklch(1 0 0);
+    --color-card-to: oklch(0.985 0.002 265);
+    --color-scrollbar: oklch(0.60 0.01 265 / 0.35);
+    --color-scrollbar-hover: oklch(0.48 0.01 265 / 0.50);
+    --color-btn-secondary-bg: oklch(0.97 0.003 265);
+    --color-btn-secondary-bg-hover: oklch(0.935 0.004 265);
+
+    /* 字体 — 统一 Inter；衬线 Instrument Serif 作编辑式大标题 */
+    --font-sans: "Inter", "Noto Sans SC", system-ui, sans-serif;
+    --font-display: "Inter", "Noto Sans SC", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", "Noto Sans Mono", ui-monospace, monospace;
+    --font-editorial: "Instrument Serif", "Songti SC", "Noto Serif SC", Georgia, serif;
+
+    /* 阴影 — 浅色用柔投影（替代辉光） */
+    --shadow-glow: 0 1px 2px oklch(0 0 0 / 0.05), 0 12px 32px -14px oklch(0 0 0 / 0.14);
+
+    /* ============================================================
+       分镜「整车三系统」面板（2026-08-29 设计稿定稿）
+       一 转向＝淡蓝（方向）/ 二 动力总成＝极淡粉（时间）/ 三 稳定＝最淡黄（安全）。
+       三层是同一套外壳换色组，浓度刻意拉开：转向最重，动力总成与稳定退到它后面，
+       只留色相认出是哪一层。样式在 css/systems.css。
+       ============================================================ */
+    --color-sys-plate: #ffffff;
+    --color-sys-highlight: oklch(1 0 0 / 0.95);
+    --color-sys-inner-edge: oklch(1 0 0 / 0.55);
+    --color-sys-shadow: oklch(0.22 0.02 265 / 0.16);
+    --color-sys-press: oklch(0.22 0.02 265 / 0.07);
+
+    /* 画面层（左侧时序分镜图）：不是三系统里的一层，用产品紫的极淡一档，
+       身份跟三系统区分得开，浓度又压在同一档，四块摆一起不花。 */
+    --color-sys-fr-ground: #f7f5fd;
+    --color-sys-fr-ground-2: #f1ecfa;
+    --color-sys-fr-card: #fdfcff;
+    --color-sys-fr-slot: #f4f0fc;
+    --color-sys-fr-line: #e7dff8;
+    --color-sys-fr-line-2: #c6b7e8;
+    --color-sys-fr-ink: #5b46ae;
+
+    --color-sys-st-ground: #dbe9f9;
+    --color-sys-st-ground-2: #c8dcf3;
+    --color-sys-st-card: #f2f7fd;
+    --color-sys-st-slot: #dfecfa;
+    --color-sys-st-line: #9dc2e6;
+    --color-sys-st-line-2: #5f93c6;
+    --color-sys-st-ink: #16457a;
+
+    --color-sys-pw-ground: #fef7f8;
+    --color-sys-pw-ground-2: #fdf0f2;
+    --color-sys-pw-card: #fffdfd;
+    --color-sys-pw-slot: #fdf4f5;
+    --color-sys-pw-line: #f6e5e8;
+    --color-sys-pw-line-2: #ecccd1;
+    --color-sys-pw-ink: #9c5e66;
+
+    --color-sys-sb-ground: #fffdf5;
+    --color-sys-sb-ground-2: #fefaec;
+    --color-sys-sb-card: #fffefb;
+    --color-sys-sb-slot: #fefaf0;
+    --color-sys-sb-line: #f8f2e2;
+    --color-sys-sb-line-2: #ebdcb8;
+    --color-sys-sb-ink: #8d7534;
+
+    /* ---- Legacy aliases — 浅色映射，旧组件继续可用 ---- */
+    --color-ink-950: oklch(0.966 0.003 265);
+    --color-ink-900: oklch(0.985 0.002 265);
+    --color-ink-850: oklch(0.992 0.001 265);
+    --color-ink-800: oklch(1 0 0);
+    --color-ink-700: oklch(0.930 0.004 265);
+    --color-neon-500: oklch(0.52 0.15 295);
+    --color-neon-400: oklch(0.48 0.15 295);
+    --color-neon-300: oklch(0.44 0.16 295);
+    --color-amberx-500: oklch(0.60 0.13 70);
+    --color-amberx-400: oklch(0.56 0.13 70);
+    --color-amberx-300: oklch(0.52 0.13 70);
+
+    /* studio-* 旧别名映射 */
+    --color-studio-bg: var(--color-bg);
+    --color-studio-panel: var(--color-bg-grad-a);
+    --color-studio-border: var(--color-hairline);
+    --color-accent-start: var(--color-accent);
+    --color-accent-end: var(--color-accent-2);
+}
+
+/* ============================================================
+   暗色主题（.dark）· 原"导演的暗房"——令牌原值
+   ============================================================ */
+.dark {
+    /* ============================================================
+       分镜「整车三系统」面板 · 暗色：与浅色稿同一套层次关系（框底 → 卡 → 左槽 →
+       值区纸），浓度同样按 转向 > 动力总成 ≈ 稳定 排。
+
+       这组值原先写在 @theme 里、且排在浅色组**前面**，被后面同名的浅色值整段覆盖，
+       等于从未生效——深色主题下这块卡还是浅底，字几乎看不见（2026-09-10 出品人报）。
+       @theme 是单一作用域、不区分主题，主题相关的覆盖必须落在 .dark 里。
+       ============================================================ */
+    --color-sys-plate: oklch(0.215 0.010 265);
+    --color-sys-highlight: oklch(1 0 0 / 0.05);
+    --color-sys-inner-edge: oklch(1 0 0 / 0.05);
+    --color-sys-shadow: oklch(0 0 0 / 0.55);
+    --color-sys-press: oklch(0 0 0 / 0.35);
+    --color-sys-fr-ground: oklch(0.252 0.030 295);
+    --color-sys-fr-ground-2: oklch(0.226 0.028 295);
+    --color-sys-fr-card: oklch(0.218 0.016 295);
+    --color-sys-fr-slot: oklch(0.268 0.034 295);
+    --color-sys-fr-line: oklch(0.340 0.038 295);
+    --color-sys-fr-line-2: oklch(0.430 0.058 295);
+    --color-sys-fr-ink: oklch(0.850 0.070 295);
+    --color-sys-st-ground: oklch(0.262 0.038 250);
+    --color-sys-st-ground-2: oklch(0.232 0.036 250);
+    --color-sys-st-card: oklch(0.222 0.020 250);
+    --color-sys-st-slot: oklch(0.278 0.044 250);
+    --color-sys-st-line: oklch(0.360 0.048 250);
+    --color-sys-st-line-2: oklch(0.460 0.070 250);
+    --color-sys-st-ink: oklch(0.860 0.070 250);
+    --color-sys-pw-ground: oklch(0.243 0.020 10);
+    --color-sys-pw-ground-2: oklch(0.221 0.018 10);
+    --color-sys-pw-card: oklch(0.215 0.010 10);
+    --color-sys-pw-slot: oklch(0.252 0.022 10);
+    --color-sys-pw-line: oklch(0.318 0.024 10);
+    --color-sys-pw-line-2: oklch(0.392 0.036 10);
+    --color-sys-pw-ink: oklch(0.855 0.052 10);
+    --color-sys-sb-ground: oklch(0.243 0.018 85);
+    --color-sys-sb-ground-2: oklch(0.221 0.016 85);
+    --color-sys-sb-card: oklch(0.215 0.009 85);
+    --color-sys-sb-slot: oklch(0.252 0.020 85);
+    --color-sys-sb-line: oklch(0.318 0.022 85);
+    --color-sys-sb-line-2: oklch(0.392 0.034 85);
+    --color-sys-sb-ink: oklch(0.870 0.062 85);
+
+    --color-bg: oklch(0.168 0.009 265);
+    --color-bg-grad-a: oklch(0.182 0.011 270);
+    --color-bg-grad-b: oklch(0.148 0.009 260);
+    --color-surface-2: oklch(0.250 0.012 265);
+
+    /* 以下为设计稿原值（见 :root 同名变量的说明） */
+    /* 流程条当前步的内描边（设计稿 1628:017160 stroke #2C3035） */
+    --color-step-active-line: #2c3035;
+    /* 分集卡：底 #1B1D1F、进度轨 #1E293B（设计稿 1628:019183 / 019226） */
+    --color-episode-card: #1b1d1f;
+    --color-episode-track: #1e293b;
+    --color-sidebar-surface: linear-gradient(180deg, rgb(20 22 27 / 55%) 0%, rgb(11 13 18 / 55%) 100%);
+    --color-nav-card: rgb(30 41 59 / 40%);
+    --color-nav-card-hover: rgb(30 41 59 / 65%);
+    --color-nav-card-active: rgb(30 41 59 / 75%);
+    --color-nav-icon: linear-gradient(135deg, #334155 6%, #1e293b 100%);
+    --color-bgm-card: linear-gradient(180deg, rgb(181 166 229 / 12%) 0%, rgb(181 166 229 / 6%) 100%);
+    --color-bgm-card-line: rgb(181 166 229 / 22%);
+    --color-bgm-art: linear-gradient(135deg, rgb(20 20 25 / 10%) 4%, rgb(26 26 32 / 10%) 100%);
+    --color-bgm-art-line: rgb(26 26 32 / 10%);
+    --color-bgm-art-hover: rgb(26 26 32 / 22%);
+    --color-track-idle: rgb(20 20 25 / 10%);
+    /* 稿上原值：底 黑色/木烟 10，描边 靛蓝/灰鲭灰 26 35%，两个标签同为 #F5F7FA */
+    --color-segment-bg: #090b0f;
+    --color-segment-line: rgb(68 72 78 / 35%);
+    --color-segment-ink: #f5f7fa;
+    --color-skeleton-a: rgb(255 255 255 / 4%);
+    --color-skeleton-b: rgb(255 255 255 / 10%);
+
+    --color-hairline: oklch(0.40 0.012 265 / 0.35);
+    --color-hairline-strong: oklch(0.45 0.014 265 / 0.55);
+    --color-hairline-soft: oklch(0.40 0.012 265 / 0.18);
+
+    --color-text: oklch(0.975 0.004 265);
+    --color-text-2: oklch(0.820 0.008 265);
+    --color-text-3: oklch(0.640 0.010 265);
+    --color-text-4: oklch(0.490 0.010 265);
+
+    --color-accent: #6e4eb1;
+    --color-accent-2: #7658b8;
+    --color-voice: oklch(0.72 0.13 250);
+    --color-voice-2: oklch(0.80 0.10 250);
+    --color-accent-soft: oklch(0.76 0.09 295 / 0.22);
+    --color-accent-dim: oklch(0.76 0.09 295 / 0.12);
+    --color-accent-glow: oklch(0.76 0.09 295 / 0.35);
+
+    --color-good: oklch(0.78 0.10 155);
+    --color-warn: oklch(0.80 0.12 70);
+    --color-danger: oklch(0.70 0.18 25);
+
+    --color-warm: oklch(0.85 0.13 75);
+    --color-warm-bright: oklch(0.92 0.13 75);
+    --color-warm-fade: oklch(0.85 0.13 75 / 0.5);
+    --color-warm-soft: oklch(0.30 0.10 75 / 0.16);
+    --color-warm-tint: oklch(0.30 0.10 75 / 0.25);
+    --color-warm-tint-faint: oklch(0.30 0.10 75 / 0.05);
+    --color-warm-ring: oklch(0.45 0.13 75 / 0.40);
+    --color-warm-glow: oklch(0.45 0.13 75 / 0.45);
+
+    --color-danger-2: oklch(0.85 0.10 25);
+    --color-danger-bright: oklch(0.92 0.10 25);
+    --color-danger-soft: oklch(0.30 0.10 25 / 0.16);
+    --color-danger-ring: oklch(0.45 0.18 25 / 0.40);
+    --color-danger-glow: oklch(0.45 0.18 25 / 0.45);
+
+    --color-on-accent: oklch(0.99 0 0);
+    --color-overlay: oklch(1 0 0 / 0.05);
+    --color-glass-from: oklch(0.21 0.012 265 / 0.96);
+    --color-glass-to: oklch(0.18 0.010 265 / 0.96);
+    --color-card-from: oklch(0.20 0.011 265 / 0.55);
+    --color-card-to: oklch(0.16 0.010 265 / 0.55);
+    --color-scrollbar: oklch(0.42 0.010 265 / 0.35);
+    --color-scrollbar-hover: oklch(0.55 0.012 265 / 0.55);
+    --color-btn-secondary-bg: oklch(0.22 0.011 265 / 0.5);
+    --color-btn-secondary-bg-hover: oklch(0.26 0.013 265 / 0.7);
+
+    --shadow-glow: 0 0 0 1px oklch(0.76 0.09 295 / 0.28), 0 18px 40px oklch(0 0 0 / 0.45);
+
+    --color-ink-950: oklch(0.148 0.009 260);
+    --color-ink-900: oklch(0.168 0.009 265);
+    --color-ink-850: oklch(0.182 0.011 270);
+    --color-ink-800: oklch(0.250 0.012 265);
+    --color-ink-700: oklch(0.310 0.013 265);
+    --color-neon-500: oklch(0.76 0.09 295);
+    --color-neon-400: oklch(0.82 0.07 295);
+    --color-neon-300: oklch(0.88 0.05 295);
+    --color-amberx-500: oklch(0.78 0.13 70);
+    --color-amberx-400: oklch(0.84 0.10 70);
+    --color-amberx-300: oklch(0.90 0.08 75);
+}
+
+/* 配色方案：根浅色、.dark 暗色 */
+:root { color-scheme: light; }
+.dark { color-scheme: dark; }
+
+/* 全局 body 背景 — 浅色为干净近白；暗色叠加电影感辉光 */
+body {
+    background: linear-gradient(180deg, var(--color-bg-grad-a), var(--color-bg-grad-b));
+    background-attachment: fixed;
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+}
+
+.dark body {
+    background:
+        radial-gradient(1000px 500px at 8% -10%, oklch(0.32 0.05 295 / 0.28), transparent 55%),
+        radial-gradient(900px 500px at 98% 110%, oklch(0.26 0.04 260 / 0.25), transparent 55%),
+        linear-gradient(180deg, var(--color-bg-grad-a), var(--color-bg-grad-b));
+    background-attachment: fixed;
+}
+
+/* 尊重系统级"减少动效"偏好（WCAG 2.3.3） */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+@keyframes login-sun-breathe {
+    0%, 100% {
+        transform: scale(0.985);
+        filter: drop-shadow(0 0 18px rgb(255 116 35 / 0.55));
+    }
+    50% {
+        transform: scale(1.025);
+        filter: drop-shadow(0 0 30px rgb(255 126 38 / 0.78));
+    }
+}
+
+.login-sun-breathe {
+    animation: login-sun-breathe 4.8s ease-in-out infinite;
+    transform-origin: center;
+    will-change: transform, filter;
+}
+
+/* 数字字符（mono + tabular nums） */
+.num {
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum" 1;
+}
+
+/* 衬线 display 大标题 */
+.display-serif {
+    font-family: var(--font-display);
+}
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+    background: var(--color-scrollbar);
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: var(--color-scrollbar-hover);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+::-webkit-scrollbar-track { background: transparent; }
+
+/* 统一焦点指示（a11y） */
+@utility focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)];
+}
+
+/* === 按下即时反馈 === */
+/* 按钮点下去到任务真正起来常有两三秒空窗，这一段保证按下那一帧就有反应，
+   不依赖任何异步状态。带 data-no-press 的元素自己有按压动效，这里让开。 */
+button:not(:disabled):not([data-no-press]):active,
+[role="button"]:not([aria-disabled="true"]):not([data-no-press]):active {
+    /* 用独立的 scale 属性，不用 transform：transform 是整体替换的，写 scale(.97) 会把
+       元素自己的定位 transform 一起顶掉——居中用 translate(-50%,-50%) 的按钮（后期页
+       的播放钮、左右换集钮）一按就往右下跳半个身位（出品人 2026-09-28「一点就漂移」）。
+       scale / translate / rotate 这三个独立属性与 transform 叠加，不互相覆盖。 */
+    scale: 0.97;
+    filter: brightness(0.92);
+}
+button:not(:disabled):not([data-no-press]),
+[role="button"]:not([aria-disabled="true"]):not([data-no-press]) {
+    transition: scale .09s ease, filter .09s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+    button:not(:disabled):not([data-no-press]):active,
+    [role="button"]:not([aria-disabled="true"]):not([data-no-press]):active {
+        scale: none;
+    }
+}
+
+/* 打字机 caret 闪烁 — 紫色 accent-2 + accent-glow */
+@keyframes tw-blink {
+    0%, 50% { opacity: 1; }
+    50.01%, 100% { opacity: 0; }
+}
+
+/* === AI 生成互动感：流光进度 + 表格逐行点亮 === */
+
+/* 流光文字条 — 生成中提示（如「正在细化场景表…」）的呼吸光泽 */
+@keyframes arc-shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
+.arc-shimmer-text {
+    background: linear-gradient(
+        90deg,
+        var(--color-text-4) 0%,
+        var(--color-accent-2) 45%,
+        var(--color-text-4) 90%
+    );
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: arc-shimmer 1.8s linear infinite;
+}
+
+/* 表格行揭示 — 新数据到达时逐行淡入上浮；配合行内 animation-delay 形成瀑布点亮 */
+@keyframes arc-row-reveal {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.arc-row-reveal {
+    opacity: 0;
+    animation: arc-row-reveal 0.36s ease-out forwards;
+}
+
+/* 骨架占位条 — 账本兜底行的时长/角色列（step1 细化前）呼吸占位 */
+@keyframes arc-skeleton-pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 0.9; }
+}
+.arc-skeleton {
+    display: inline-block;
+    height: 10px;
+    border-radius: 9999px;
+    background: var(--color-hairline);
+    animation: arc-skeleton-pulse 1.6s ease-in-out infinite;
+}
+
+/* 极简模式进度条 — 不定型扫掠（LLM 思考等无法预估时长的阶段） */
+@keyframes arc-progress-sweep {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+}
+.arc-progress-sweep {
+    animation: arc-progress-sweep 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+    .arc-shimmer-text { animation: none; color: var(--color-text-3); }
+    .arc-row-reveal { opacity: 1; animation: none; }
+    .arc-skeleton { animation: none; }
+    .arc-progress-sweep { animation: none; }
+}
+
+/* === Modal / Glass panel chrome === */
+
+/* 玻璃面板 — GlassModal / GlassPopover 的内容容器样式 */
+.arc-glass-panel {
+    background: linear-gradient(180deg, var(--color-glass-from), var(--color-glass-to));
+    border: 1px solid var(--color-hairline);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-shadow:
+        0 24px 60px -12px oklch(0 0 0 / 0.18),
+        inset 0 1px 0 oklch(1 0 0 / 0.6);
+}
+.dark .arc-glass-panel {
+    box-shadow:
+        0 24px 60px -12px oklch(0 0 0 / 0.6),
+        inset 0 1px 0 oklch(1 0 0 / 0.05);
+}
+
+/* 顶部 hairline 渐变线（accent 默认 / warm 用 data-tone="warm"） */
+.arc-glass-hairline {
+    pointer-events: none;
+    position: absolute;
+    inset-inline: 0;
+    top: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--color-accent-soft), transparent);
+}
+.arc-glass-hairline[data-tone="warm"] {
+    background: linear-gradient(90deg, transparent, var(--color-warm-fade), transparent);
+}
+
+/* 玻璃 X 关闭按钮 */
+.arc-close-btn {
+    color: var(--color-text-3);
+    transition: color 150ms, background 150ms;
+}
+.arc-close-btn:hover {
+    color: var(--color-text);
+    background: var(--color-overlay);
+}
+
+/* 玻璃次按钮（Cancel / 普通操作） */
+.arc-btn-secondary {
+    color: var(--color-text-3);
+    border: 1px solid var(--color-hairline);
+    background: var(--color-btn-secondary-bg);
+    transition: color 150ms, background 150ms, border-color 150ms;
+}
+.arc-btn-secondary:hover:not(:disabled) {
+    color: var(--color-text);
+    background: var(--color-btn-secondary-bg-hover);
+    border-color: var(--color-hairline-strong);
+}
+.arc-btn-secondary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* 主按钮 CTA — accent 默认，warm/danger 用 data-tone */
+.arc-btn-primary {
+    color: var(--color-on-accent);
+    background: linear-gradient(135deg, var(--color-accent-2), var(--color-accent));
+    box-shadow:
+        inset 0 1px 0 oklch(1 0 0 / 0.35),
+        0 6px 18px -6px var(--color-accent-glow),
+        0 0 0 1px var(--color-accent-soft);
+    transition: transform 150ms, opacity 150ms;
+}
+.arc-btn-primary[data-tone="warm"] {
+    color: oklch(0.14 0 0);
+    background: linear-gradient(135deg, var(--color-warm-bright), var(--color-warm));
+    box-shadow:
+        inset 0 1px 0 oklch(1 0 0 / 0.35),
+        0 6px 18px -6px var(--color-warm-glow),
+        0 0 0 1px var(--color-warm-ring);
+}
+.arc-btn-primary[data-tone="danger"] {
+    color: oklch(0.14 0 0);
+    background: linear-gradient(135deg, var(--color-danger-bright), var(--color-danger-2));
+    box-shadow:
+        inset 0 1px 0 oklch(1 0 0 / 0.35),
+        0 6px 18px -6px var(--color-danger-glow),
+        0 0 0 1px var(--color-danger-ring);
+}
+.arc-btn-primary:hover:not(:disabled) {
+    transform: translateY(-1px);
+}
+.arc-btn-primary:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* ---- 工作台顶栏：两侧按较宽一端等宽留位，阶段导航始终以整栏中线为轴。 ---- */
+.global-header-grid {
+    /* JS 首帧测量前的保底值；之后随品牌/操作区内容宽度更新。 */
+    --header-side-width: 350px;
+    grid-template-columns:
+        minmax(0, 1fr)
+        minmax(0, min(920px, max(0px, calc(100% - var(--header-side-width) - var(--header-side-width) - 28px))))
+        minmax(0, 1fr);
+    column-gap: 14px;
+}
+
+/* 中等宽度让阶段条独占第二行；不以挤压右侧操作按钮换取一行显示。 */
+@media (min-width: 768px) and (max-width: 1099.98px) {
+    .global-header {
+        height: 112px;
+    }
+
+    .global-header-grid {
+        grid-template-columns: minmax(0, 1fr) max-content;
+        grid-template-rows: 56px 56px;
+    }
+
+    .global-header-grid > :first-child {
+        grid-column: 1;
+        grid-row: 1;
+    }
+
+    .global-header-grid > :nth-child(2) {
+        grid-column: 1 / -1;
+        grid-row: 2;
+    }
+
+    .global-header-grid > :last-child {
+        grid-column: 2;
+        grid-row: 1;
+    }
+}
+
+/* 手机宽度不足以并列三块内容：依次换行，操作区仍贴右且不裁切弹层。 */
+@media (max-width: 767.98px) {
+    .global-header {
+        height: 144px;
+    }
+
+    .global-header-grid {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: 48px 48px 48px;
+        column-gap: 0;
+    }
+
+    .global-header-grid > :first-child {
+        grid-column: 1;
+        grid-row: 1;
+    }
+
+    .global-header-grid > :first-child img {
+        max-width: 140px;
+    }
+
+    .global-header-grid > :nth-child(2) {
+        grid-column: 1;
+        grid-row: 2;
+    }
+
+    .global-header-grid > :last-child {
+        grid-column: 1;
+        grid-row: 3;
+    }
+}
+
+/* 仅在确实被裁切的一侧柔化阶段条边缘：宽屏和 iPad 共用，
+   首尾阶段已完整显示时不虚化，避免把可点击的标签无故冲淡。 */
+.phase-scroll-fade[data-fade-left="true"] {
+    mask-image: linear-gradient(to right, transparent, black 28px);
+    -webkit-mask-image: linear-gradient(to right, transparent, black 28px);
+}
+
+.phase-scroll-fade[data-fade-right="true"] {
+    mask-image: linear-gradient(to right, black calc(100% - 28px), transparent);
+    -webkit-mask-image: linear-gradient(to right, black calc(100% - 28px), transparent);
+}
+
+.phase-scroll-fade[data-fade-left="true"][data-fade-right="true"] {
+    mask-image: linear-gradient(to right, transparent, black 28px, black calc(100% - 28px), transparent);
+    -webkit-mask-image: linear-gradient(to right, transparent, black 28px, black calc(100% - 28px), transparent);
+}

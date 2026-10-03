@@ -10,14 +10,7 @@ export interface Doc {
   createdAt: number;
 }
 
-export interface ChunkIn {
-  idx: number;
-  page: number | null;
-  text: string;
-  embedding: number[];
-}
-
-export interface SearchHit {
+export interface Hit {
   chunkId: number;
   docId: string;
   docTitle: string;
@@ -27,40 +20,52 @@ export interface SearchHit {
   distance: number;
 }
 
-/** 供应商配置。embedMode = "local" 时不联网，用本地哈希向量（仅供流程验证） */
-export interface Settings {
-  baseUrl: string;
-  apiKey: string;
-  chatModel: string;
-  embedModel: string;
-  embedMode: "api" | "local";
-  answerMode: "llm" | "extract";
-  topK: number;
+export interface ToolCall {
+  name: string;
+  input: Record<string, unknown>;
+  summary?: string;
 }
-
-export const DEFAULT_SETTINGS: Settings = {
-  baseUrl: "https://api.openai.com/v1",
-  apiKey: "",
-  chatModel: "gpt-4o-mini",
-  embedModel: "text-embedding-3-small",
-  embedMode: "local",
-  answerMode: "extract",
-  topK: 6,
-};
 
 export interface Message {
   role: "user" | "assistant";
   content: string;
-  /** 回答引用到的片段，按 [1][2] 的顺序 */
-  sources?: SearchHit[];
-  /** 本轮用过的工具调用记录 */
-  toolCalls?: ToolCallRecord[];
+  hits?: Hit[];
+  tools?: ToolCall[];
+  costUsd?: number | null;
   pending?: boolean;
+  error?: boolean;
 }
 
-export interface ToolCallRecord {
-  name: string;
-  args: Record<string, unknown>;
-  status: "approved" | "rejected" | "auto";
-  result?: string;
+export interface Session {
+  id: string;
+  sdkSessionId: string | null;
+  title: string;
+  updatedAt: number;
 }
+
+/** 模型供应商：任何 Anthropic 兼容接口 */
+export interface Settings {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  topK: number;
+}
+
+export const DEFAULT_SETTINGS: Settings = {
+  baseUrl: "https://api.deepseek.com/anthropic",
+  apiKey: "",
+  model: "deepseek-flash",
+  topK: 6,
+};
+
+/** sidecar 发来的事件（协议定义见 sidecar/agent.ts 顶部） */
+export type AgentEvent =
+  | { type: "ready" }
+  | { type: "exited" }
+  | { type: "session"; id: string; sessionId: string }
+  | { type: "delta"; id: string; text: string }
+  | { type: "tool"; id: string; name: string; input: Record<string, unknown> }
+  | { type: "tool_result"; id: string; summary: string }
+  | { type: "approval_request"; id: string; requestId: string; name: string; input: Record<string, unknown> }
+  | { type: "result"; id: string; text: string; sessionId: string | null; costUsd: number | null; turns: number | null; hits: Hit[] }
+  | { type: "error"; id?: string; message: string };

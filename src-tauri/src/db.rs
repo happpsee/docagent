@@ -101,6 +101,24 @@ fn init_schema(conn: &Connection) -> Result<()> {
             text    TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);
+
+        -- 对话持久化。sdk_session_id 是 Agent SDK 的会话 id，续聊时用它 resume
+        CREATE TABLE IF NOT EXISTS sessions (
+            id              TEXT PRIMARY KEY,
+            sdk_session_id  TEXT,
+            title           TEXT NOT NULL,
+            created_at      INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS messages (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            role        TEXT NOT NULL,
+            content     TEXT NOT NULL,
+            meta        TEXT,
+            created_at  INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
         "#,
     )?;
     Ok(())
@@ -313,6 +331,147 @@ pub fn reset_index(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TextChunk {
+    pub idx: i64,
+    pub page: Option<i64>,
+    pub text: String,
+}
+
+/// 入库：向量在这里算，前端只送文本。检索时的查询向量也在 Rust 算，保证两边一致。
+pub fn add_document_text(
+    conn: &mut Connection,
+    title: &str,
+    path: Option<&str>,
+    kind: &str,
+    pages: Option<i64>,
+    chunks: &[TextChunk],
+) -> Result<String> {
+    let with_vec: Vec<ChunkIn> = chunks
+        .iter()
+        .map(|c| ChunkIn {
+            idx: c.idx,
+            page: c.page,
+            text: c.text.clone(),
+            embedding: crate::embed::hash_embed(&c.text),
+        })
+        .collect();
+    add_document(conn, title, path, kind, pages, &with_vec)
+}
+
+/// 文本检索：算查询向量 → KNN → 丢掉距离过大的（等于没命中）
+pub fn search_text(
+    conn: &Connection,
+    query: &str,
+    k: usize,
+    doc_ids: Option<&[String]>,
+) -> Result<Vec<SearchHit>> {
+    let v = crate::embed::hash_embed(query);
+    let mut hits = search(conn, &v, k, doc_ids)?;
+    hits.retain(|h| h.distance < crate::embed::NO_MATCH_DISTANCE);
+    Ok(hits)
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionOut {
+    pub id: String,
+    pub sdk_session_id: Option<String>,
+    pub title: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MessageOut {
+    pub id: i64,
+    pub role: String,
+    pub content: String,
+    pub meta: Option<String>,
+    pub created_at: i64,
+}
+
+pub fn upsert_session(
+    conn: &Connection,
+    id: &str,
+    title: &str,
+    sdk_session_id: Option<&str>,
+) -> Result<()> {
+    let t = now();
+    conn.execute(
+        "INSERT INTO sessions(id, sdk_session_id, title, created_at, updated_at)
+         VALUES(?1, ?2, ?3, ?4, ?4)
+         ON CONFLICT(id) DO UPDATE SET
+            sdk_session_id = COALESCE(excluded.sdk_session_id, sessions.sdk_session_id),
+            updated_at = excluded.updated_at",
+        params![id, sdk_session_id, title, t],
+    )?;
+    Ok(())
+}
+
+pub fn list_sessions(conn: &Connection) -> Result<Vec<SessionOut>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, sdk_session_id, title, created_at, updated_at
+         FROM sessions ORDER BY updated_at DESC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(SessionOut {
+            id: r.get(0)?,
+            sdk_session_id: r.get(1)?,
+            title: r.get(2)?,
+            created_at: r.get(3)?,
+            updated_at: r.get(4)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+pub fn delete_session(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+pub fn add_message(
+    conn: &Connection,
+    session_id: &str,
+    role: &str,
+    content: &str,
+    meta: Option<&str>,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO messages(session_id, role, content, meta, created_at) VALUES(?1,?2,?3,?4,?5)",
+        params![session_id, role, content, meta, now()],
+    )?;
+    conn.execute(
+        "UPDATE sessions SET updated_at = ?2 WHERE id = ?1",
+        params![session_id, now()],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn get_messages(conn: &Connection, session_id: &str) -> Result<Vec<MessageOut>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, role, content, meta, created_at FROM messages
+         WHERE session_id = ?1 ORDER BY id",
+    )?;
+    let rows = stmt.query_map(params![session_id], |r| {
+        Ok(MessageOut {
+            id: r.get(0)?,
+            role: r.get(1)?,
+            content: r.get(2)?,
+            meta: r.get(3)?,
+            created_at: r.get(4)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,5 +556,57 @@ mod tests {
             get_setting(&conn, "provider").unwrap().unwrap(),
             "{\"base\":\"x\"}"
         );
+    }
+
+    #[test]
+    fn 文本入库后能按内容检索_无关问题不命中() {
+        let mut conn = open_in_memory().unwrap();
+        add_document_text(
+            &mut conn,
+            "采购合同",
+            None,
+            "md",
+            None,
+            &[
+                TextChunk {
+                    idx: 0,
+                    page: None,
+                    text: "第三条 付款条款：合同签订后 5 个工作日内支付 30% 预付款。".into(),
+                },
+                TextChunk {
+                    idx: 1,
+                    page: None,
+                    text: "第四条 质保：质保期为验收合格之日起 24 个月，期内免费维修。".into(),
+                },
+            ],
+        )
+        .unwrap();
+
+        let hits = search_text(&conn, "质保期多久", 3, None).unwrap();
+        assert!(!hits.is_empty());
+        assert!(hits[0].text.contains("质保期"));
+
+        // 完全无关的问题应被距离阈值滤掉
+        let hits = search_text(&conn, "推荐一首适合跑步听的歌", 3, None).unwrap();
+        assert!(hits.is_empty(), "无关问题不该有命中: {hits:?}");
+    }
+
+    #[test]
+    fn 会话与消息读写_删除级联() {
+        let conn = open_in_memory().unwrap();
+        upsert_session(&conn, "s1", "第一个会话", None).unwrap();
+        add_message(&conn, "s1", "user", "你好", None).unwrap();
+        add_message(&conn, "s1", "assistant", "你好，有什么可以帮你", Some("{}")).unwrap();
+        // 后续拿到 SDK 会话 id 再补上，标题不被覆盖
+        upsert_session(&conn, "s1", "不应覆盖", Some("sdk-abc")).unwrap();
+
+        let list = list_sessions(&conn).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].title, "第一个会话");
+        assert_eq!(list[0].sdk_session_id.as_deref(), Some("sdk-abc"));
+        assert_eq!(get_messages(&conn, "s1").unwrap().len(), 2);
+
+        delete_session(&conn, "s1").unwrap();
+        assert!(get_messages(&conn, "s1").unwrap().is_empty());
     }
 }

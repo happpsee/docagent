@@ -23,6 +23,7 @@ sqlite-vec = "0.1"
 zerocopy = "0.8"
 uuid = { version = "1", features = ["v4"] }
 libsqlite3-sys = "0.35"
+tiny_http = "0.12.0"
 
 [profile.release]
 opt-level = 3
