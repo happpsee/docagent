@@ -258,6 +258,8 @@ export interface Session {
 
 /** 一家模型供应商的配置 */
 export interface ProviderConfig {
+  /** 自定义接口起的名字；目录里的那几家不存，用目录里的名字 */
+  name?: string;
   baseUrl: string;
   apiKey: string;
   model: string;
@@ -269,7 +271,7 @@ export interface Settings {
   baseUrl: string;
   apiKey: string;
   model: string;
-  /** 正在用的是哪一家（PROVIDERS 里的 id） */
+  /** 正在用的是哪一家（providers 里的键） */
   provider?: string;
   providers?: Record<string, ProviderConfig>;
   topK: number;

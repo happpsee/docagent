@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from "react";
-import { Check, ChevronDown, Database, Eye, EyeOff, Loader2, Puzzle, Search, Sparkles } from "lucide-react";
+import { Check, Database, Eye, EyeOff, Loader2, Plus, Puzzle, Search, Sparkles, Trash2 } from "lucide-react";
 import * as api from "@/lib/api";
 import type { ExtensionSet, Extensions, ProviderConfig, Settings } from "@/lib/types";
 import { GlassModal } from "./ui/GlassModal";
@@ -15,14 +15,16 @@ interface Props {
   extensions: Extensions | null;
 }
 
-/** 内置的几家供应商。助手用的是 Anthropic 的接口格式，所以这里填的都是各家「Anthropic 兼容」的地址。
- *  models 是可以直接点选的型号；空着的需要自己填 */
-const PROVIDERS: { id: string; name: string; baseUrl: string; models: string[]; hint: string }[] = [
+/** 目录：添加供应商时可以直接选的几家。助手用的是 Anthropic 的接口格式，所以这里都是各家「Anthropic 兼容」的地址；
+ *  目录里没有的走「自定义接口」。models 是可以直接点选的型号 */
+const CATALOG: { id: string; name: string; baseUrl: string; models: string[]; hint: string }[] = [
   { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/anthropic", models: ["deepseek-flash", "deepseek-v4-pro"], hint: "在 platform.deepseek.com 申请 API Key" },
   { id: "kimi", name: "Kimi（月之暗面）", baseUrl: "https://api.moonshot.cn/anthropic", models: [], hint: "在 platform.moonshot.cn 申请，模型名照它控制台里的写" },
   { id: "zhipu", name: "智谱 GLM", baseUrl: "https://open.bigmodel.cn/api/anthropic", models: [], hint: "在 open.bigmodel.cn 申请，模型名照它控制台里的写" },
+  { id: "minimax", name: "MiniMax", baseUrl: "https://api.minimaxi.com/anthropic", models: [], hint: "在 platform.minimaxi.com 申请，模型名照它控制台里的写" },
+  { id: "bailian", name: "阿里云百炼", baseUrl: "https://dashscope.aliyuncs.com/apps/anthropic", models: [], hint: "在百炼控制台申请，模型名照它控制台里的写" },
+  { id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api", models: [], hint: "在 openrouter.ai 申请，模型名形如 anthropic/claude-sonnet-4.5" },
   { id: "anthropic", name: "Anthropic", baseUrl: "https://api.anthropic.com", models: ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-4-5-20251001"], hint: "在 console.anthropic.com 申请" },
-  { id: "custom", name: "自定义", baseUrl: "", models: [], hint: "任何 Anthropic 兼容的接口：填它的地址、Key 和模型名" },
 ];
 
 type Section = "model" | "search" | "ext" | "data";
@@ -32,20 +34,31 @@ const inputCls =
   "w-full rounded-md border border-hairline bg-bg px-3 py-2 text-[13px] text-text outline-none focus:border-accent placeholder:text-text-4";
 const labelCls = "mb-1 block text-[12px] text-text-3";
 
-/** 老设置里没有「哪一家」：按接口地址认出来，认不出就算自定义 */
-function initial(settings: Settings): { active: string; providers: Record<string, ProviderConfig> } {
+/** 正在填的那张表：id 为 null 是新添加，否则是在改已有的一家 */
+interface Draft extends ProviderConfig {
+  id: string | null;
+  tab: "catalog" | "custom";
+  catalogId: string;
+}
+
+const usable = (c: ProviderConfig | undefined) => !!(c && c.apiKey.trim() && c.baseUrl.trim() && c.model.trim());
+const nameOf = (id: string, c: ProviderConfig) => c.name?.trim() || CATALOG.find((p) => p.id === id)?.name || "自定义";
+
+/** 只留真正配过的（填了 Key 的）。老设置里没有「哪一家」：按接口地址认出来，认不出就算自定义 */
+function initial(settings: Settings): { active: string | null; providers: Record<string, ProviderConfig> } {
   const providers: Record<string, ProviderConfig> = {};
-  for (const p of PROVIDERS) {
-    providers[p.id] = settings.providers?.[p.id] ?? { baseUrl: p.baseUrl, apiKey: "", model: p.models[0] ?? "" };
-  }
+  for (const [id, c] of Object.entries(settings.providers ?? {})) if (c.apiKey.trim()) providers[id] = c;
   let active = settings.provider && providers[settings.provider] ? settings.provider : null;
-  if (!active) {
-    active = PROVIDERS.find((p) => p.baseUrl && p.baseUrl === settings.baseUrl.trim().replace(/\/$/, ""))?.id ?? (settings.apiKey ? "custom" : "deepseek");
-    if (settings.apiKey || settings.baseUrl !== PROVIDERS[0].baseUrl) {
-      providers[active] = { baseUrl: settings.baseUrl || providers[active].baseUrl, apiKey: settings.apiKey, model: settings.model || providers[active].model };
-    }
+  if (!active && settings.apiKey) {
+    active = CATALOG.find((p) => p.baseUrl === settings.baseUrl.trim().replace(/\/$/, ""))?.id ?? "custom";
+    providers[active] = { baseUrl: settings.baseUrl, apiKey: settings.apiKey, model: settings.model };
   }
-  return { active, providers };
+  return { active: active ?? Object.keys(providers)[0] ?? null, providers };
+}
+
+function blank(taken: string[]): Draft {
+  const first = CATALOG.find((p) => !taken.includes(p.id));
+  return { id: null, tab: first ? "catalog" : "custom", catalogId: first?.id ?? "", name: "", baseUrl: first?.baseUrl ?? "", apiKey: "", model: first?.models[0] ?? "" };
 }
 
 /** 设置：左边分类，右边内容。模型这一栏按供应商一行一行列出来——哪家填了 Key、正在用哪家一眼看得到，
@@ -55,28 +68,60 @@ export function SettingsModal({ settings, onSave, onClose, onDocsChanged, extens
   const [section, setSection] = useState<Section>("model");
   const [s, setS] = useState(settings);
   const [{ active, providers }, setModels] = useState(() => initial(settings));
-  const [open, setOpen] = useState<string | null>(() => (settings.apiKey ? null : initial(settings).active));
+  const [draft, setDraft] = useState<Draft | null>(() => (Object.keys(initial(settings).providers).length ? null : blank([])));
   const [saving, setSaving] = useState(false);
   const [probe, setProbe] = useState<Record<string, Probe>>({});
 
-  const patch = (id: string, p: Partial<ProviderConfig>) => {
-    setModels((m) => ({ ...m, providers: { ...m.providers, [id]: { ...m.providers[id], ...p } } }));
-    setProbe((x) => ({ ...x, [id]: { state: "idle" } }));
+  const edit = (p: Partial<Draft>) => {
+    setDraft((d) => (d ? { ...d, ...p } : d));
+    setProbe((x) => ({ ...x, form: { state: "idle" } }));
   };
-  const usable = (c: ProviderConfig) => !!(c.apiKey.trim() && c.baseUrl.trim() && c.model.trim());
-  const current = providers[active];
-  const dirty =
-    JSON.stringify({ ...s, provider: active, providers, baseUrl: current.baseUrl, apiKey: current.apiKey, model: current.model }) !==
-    JSON.stringify({ ...settings, provider: settings.provider ?? active, providers: settings.providers ?? providers });
+  const openDraft = (d: Draft | null) => {
+    setDraft(d);
+    setProbe((x) => ({ ...x, form: { state: "idle" } }));
+  };
+  const current = active ? providers[active] : undefined;
+  const clean = (c: ProviderConfig): ProviderConfig => ({
+    ...(c.name?.trim() ? { name: c.name.trim() } : {}),
+    baseUrl: c.baseUrl.trim().replace(/\/$/, ""),
+    apiKey: c.apiKey.trim(),
+    model: c.model.trim(),
+  });
+  const result = (): Settings => {
+    const all = Object.fromEntries(Object.entries(providers).map(([id, c]) => [id, clean(c)]));
+    const cur = active ? all[active] : undefined;
+    return { ...s, provider: active ?? undefined, providers: all, baseUrl: cur?.baseUrl ?? "", apiKey: cur?.apiKey ?? "", model: cur?.model ?? "" };
+  };
+  const [pristine] = useState(() => JSON.stringify(result()));
+  const dirty = JSON.stringify(result()) !== pristine;
 
-  async function test(id: string) {
-    const c = providers[id];
-    setProbe((x) => ({ ...x, [id]: { state: "busy" } }));
+  /** 把表里填的收进列表；第一家、或者正在用的那家还不能用时，顺手切过来 */
+  function commit() {
+    if (!draft) return;
+    const { id, tab, catalogId, ...c } = draft;
+    let key = id ?? (tab === "catalog" ? catalogId : "custom");
+    for (let n = 2; !id && tab === "custom" && providers[key]; n++) key = `custom-${n}`;
+    const entry = tab === "catalog" && !id ? { ...c, name: undefined } : c;
+    setModels((m) => ({ active: usable(m.active ? m.providers[m.active] : undefined) ? m.active : key, providers: { ...m.providers, [key]: entry } }));
+    openDraft(null);
+  }
+
+  function remove(id: string) {
+    setModels((m) => {
+      const { [id]: _, ...rest } = m.providers;
+      return { active: m.active === id ? (Object.keys(rest)[0] ?? null) : m.active, providers: rest };
+    });
+    if (draft?.id === id) openDraft(null);
+  }
+
+  async function test() {
+    if (!draft) return;
+    setProbe((x) => ({ ...x, form: { state: "busy" } }));
     try {
-      const ms = await api.testModel(c.baseUrl, c.apiKey, c.model);
-      setProbe((x) => ({ ...x, [id]: { state: "ok", text: `通了，用时 ${(ms / 1000).toFixed(1)} 秒` } }));
+      const ms = await api.testModel(draft.baseUrl.trim(), draft.apiKey.trim(), draft.model.trim());
+      setProbe((x) => ({ ...x, form: { state: "ok", text: `通了，用时 ${(ms / 1000).toFixed(1)} 秒` } }));
     } catch (err) {
-      setProbe((x) => ({ ...x, [id]: { state: "bad", text: String(err) } }));
+      setProbe((x) => ({ ...x, form: { state: "bad", text: String(err) } }));
     }
   }
 
@@ -92,11 +137,20 @@ export function SettingsModal({ settings, onSave, onClose, onDocsChanged, extens
 
   function save() {
     setSaving(true);
-    const trimmed = Object.fromEntries(
-      Object.entries(providers).map(([id, c]) => [id, { baseUrl: c.baseUrl.trim().replace(/\/$/, ""), apiKey: c.apiKey.trim(), model: c.model.trim() }]),
-    );
-    void onSave({ ...s, provider: active, providers: trimmed, ...trimmed[active] }).finally(() => setSaving(false));
+    void onSave(result()).finally(() => setSaving(false));
   }
+
+  const form = draft && (
+    <ProviderForm
+      draft={draft}
+      taken={Object.keys(providers)}
+      probe={probe.form ?? { state: "idle" }}
+      onEdit={edit}
+      onTest={() => void test()}
+      onCancel={() => openDraft(null)}
+      onDone={commit}
+    />
+  );
 
   const nav: [Section, string, typeof Sparkles][] = [
     ["model", "模型", Sparkles],
@@ -136,88 +190,47 @@ export function SettingsModal({ settings, onSave, onClose, onDocsChanged, extens
             {section === "model" && (
               <>
                 <p className="pb-3 text-[12px] leading-relaxed text-text-3">
-                  助手用哪家的模型。每家的 Key 各记各的，只存在这台电脑上；提问时，问题和检索到的片段会发给正在用的那一家。
+                  填入提供商的 API Key 就能用它的模型。Key 只存在这台电脑上；提问时，问题和检索到的片段会发给正在用的那一家。
                 </p>
                 <ul className="space-y-2">
-                  {PROVIDERS.map((p) => {
-                    const c = providers[p.id];
-                    const isOpen = open === p.id;
-                    const isActive = active === p.id;
-                    const pr = probe[p.id] ?? { state: "idle" };
-                    return (
-                      <li key={p.id} className={`rounded-xl border ${isOpen ? "border-hairline-strong bg-surface-2" : "border-hairline"}`}>
-                        <button className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left" aria-expanded={isOpen} onClick={() => setOpen(isOpen ? null : p.id)}>
-                          <span
-                            className={`h-2 w-2 shrink-0 rounded-full ${c.apiKey.trim() ? "bg-good" : "bg-track-idle"}`}
-                            title={c.apiKey.trim() ? "已填 API Key" : "还没填 API Key"}
-                          />
-                          <span className="text-[13px] font-medium text-text">{p.name}</span>
-                          {isActive && <span className="rounded-full bg-accent-dim px-1.5 py-px text-[10px] text-accent">正在用</span>}
-                          <span className="num min-w-0 flex-1 truncate text-right text-[11px] text-text-4">{c.apiKey.trim() ? c.model : "未配置"}</span>
-                          <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-text-4 transition-transform ${isOpen ? "rotate-180" : ""}`} />
-                        </button>
-                        {isOpen && (
-                          <div className="space-y-3 border-t border-hairline-soft px-3.5 pb-3.5 pt-3">
-                            <div>
-                              <span className={labelCls}>API Key</span>
-                              <SecretInput value={c.apiKey} onChange={(v) => patch(p.id, { apiKey: v })} placeholder="sk-…" />
-                              <span className="mt-1 block text-[11px] text-text-4">{p.hint}</span>
-                            </div>
-                            <div>
-                              <span className={labelCls}>模型</span>
-                              {p.models.length > 0 && (
-                                <div className="mb-1.5 flex flex-wrap gap-1.5">
-                                  {p.models.map((m) => (
-                                    <button
-                                      key={m}
-                                      onClick={() => patch(p.id, { model: m })}
-                                      className={`num rounded-full border px-2.5 py-1 text-[12px] ${
-                                        c.model === m ? "border-accent bg-accent-dim text-accent" : "border-hairline text-text-2 hover:border-hairline-strong"
-                                      }`}
-                                    >
-                                      {m}
-                                    </button>
-                                  ))}
-                                </div>
-                              )}
-                              <input
-                                className={`${inputCls} num`}
-                                value={c.model}
-                                placeholder="模型名，照供应商控制台里的写"
-                                onChange={(e) => patch(p.id, { model: e.target.value })}
-                              />
-                            </div>
-                            <details open={p.id === "custom" || !c.baseUrl}>
-                              <summary className="cursor-pointer select-none text-[12px] text-text-3 hover:text-text">接口地址</summary>
-                              <input
-                                className={`${inputCls} num mt-1.5`}
-                                value={c.baseUrl}
-                                placeholder="https://…（Anthropic 兼容的地址）"
-                                onChange={(e) => patch(p.id, { baseUrl: e.target.value })}
-                              />
-                              {p.baseUrl && c.baseUrl !== p.baseUrl && (
-                                <button className="mt-1 text-[11px] text-accent hover:underline" onClick={() => patch(p.id, { baseUrl: p.baseUrl })}>
-                                  恢复默认地址
-                                </button>
-                              )}
-                            </details>
-                            <div className="flex items-center gap-2 pt-0.5">
-                              <SecondaryButton size="sm" disabled={!usable(c) || pr.state === "busy"} onClick={() => void test(p.id)}>
-                                {pr.state === "busy" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                                测试连接
-                              </SecondaryButton>
-                              {!isActive && (
-                                <SecondaryButton size="sm" disabled={!usable(c)} onClick={() => setModels((m) => ({ ...m, active: p.id }))}>
-                                  用这一家
-                                </SecondaryButton>
-                              )}
-                              <ProbeText p={pr} />
-                            </div>
-                          </div>
+                  {Object.entries(providers).map(([id, c]) => (
+                    <li key={id} className="rounded-xl border border-hairline">
+                      <div className="flex items-center gap-2 px-3.5 py-2.5">
+                        <span className="min-w-0 truncate text-[13px] font-medium text-text">{nameOf(id, c)}</span>
+                        <span className={`h-2 w-2 shrink-0 rounded-full ${usable(c) ? "bg-good" : "bg-track-idle"}`} title={usable(c) ? "可以用" : "还没填全"} />
+                        {active === id && <span className="shrink-0 rounded-full bg-accent-dim px-1.5 py-px text-[10px] text-accent">正在用</span>}
+                        <span className="num min-w-0 flex-1 truncate text-right text-[11px] text-text-4">{c.model}</span>
+                        {active !== id && (
+                          <SecondaryButton size="sm" disabled={!usable(c)} onClick={() => setModels((m) => ({ ...m, active: id }))}>
+                            用这一家
+                          </SecondaryButton>
                         )}
-                      </li>
-                    );
-                  })}
+                        <SecondaryButton
+                          size="sm"
+                          onClick={() => openDraft(draft?.id === id ? null : { id, tab: CATALOG.some((p) => p.id === id) ? "catalog" : "custom", catalogId: id, name: c.name ?? "", baseUrl: c.baseUrl, apiKey: c.apiKey, model: c.model })}
+                        >
+                          编辑
+                        </SecondaryButton>
+                        <button className="shrink-0 rounded-md p-1 text-text-4 hover:bg-nav-card hover:text-danger" aria-label={`移除 ${nameOf(id, c)}`} title="移除" onClick={() => remove(id)}>
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      {draft?.id === id && <div className="border-t border-hairline-soft p-3.5">{form}</div>}
+                    </li>
+                  ))}
+                  <li>
+                    {draft && draft.id === null ? (
+                      <div className="rounded-xl border border-hairline-strong bg-surface-2 p-3.5">{form}</div>
+                    ) : (
+                      <button
+                        className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-hairline-strong px-3.5 py-3 text-[13px] text-text-2 hover:bg-nav-card hover:text-text"
+                        onClick={() => openDraft(blank(Object.keys(providers)))}
+                      >
+                        <Plus className="h-4 w-4" />
+                        添加模型提供商
+                      </button>
+                    )}
+                  </li>
                 </ul>
               </>
             )}
@@ -303,12 +316,12 @@ export function SettingsModal({ settings, onSave, onClose, onDocsChanged, extens
 
           <div className="flex items-center gap-2 border-t border-hairline px-5 py-3">
             <span className="min-w-0 flex-1 truncate text-[12px] text-text-4">
-              {usable(current) ? `正在用：${PROVIDERS.find((p) => p.id === active)?.name} · ${current.model}` : "还没有可用的模型：填好一家的 API Key 和模型名"}
+              {draft ? "上面那张表还没确定" : active && current && usable(current) ? `正在用：${nameOf(active, current)} · ${current.model}` : "还没有可用的模型：先添加一家"}
             </span>
             <SecondaryButton size="sm" onClick={onClose}>
               {dirty ? "取消" : "关闭"}
             </SecondaryButton>
-            <PrimaryButton size="sm" disabled={saving || !usable(current)} onClick={save}>
+            <PrimaryButton size="sm" disabled={saving || !!draft || !usable(current)} onClick={save}>
               {saving ? "连接中…" : "保存并连接"}
             </PrimaryButton>
           </div>
@@ -321,6 +334,123 @@ export function SettingsModal({ settings, onSave, onClose, onDocsChanged, extens
   function openConfig(dir: string | null) {
     void api.ensureConfigDir(dir).then(api.openPath).catch(() => {});
   }
+}
+
+/** 添加 / 编辑一家：从目录里选（地址和常用型号是现成的），或者自己填一个 Anthropic 兼容的接口 */
+function ProviderForm(p: {
+  draft: Draft;
+  taken: string[];
+  probe: Probe;
+  onEdit: (d: Partial<Draft>) => void;
+  onTest: () => void;
+  onCancel: () => void;
+  onDone: () => void;
+}) {
+  const { draft: d, onEdit } = p;
+  const isNew = d.id === null;
+  const entry = d.tab === "catalog" ? CATALOG.find((c) => c.id === d.catalogId) : undefined;
+  const choices = CATALOG.filter((c) => !p.taken.includes(c.id));
+  const tabCls = (on: boolean) => `rounded-md px-3 py-1 text-[12px] ${on ? "bg-surface text-text shadow-sm" : "text-text-3 hover:text-text"}`;
+  return (
+    <div className="space-y-3">
+      {isNew && (
+        <div className="inline-flex gap-0.5 rounded-lg bg-segment-bg p-0.5">
+          <button
+            className={tabCls(d.tab === "catalog")}
+            disabled={!choices.length}
+            onClick={() => choices[0] && onEdit({ tab: "catalog", catalogId: choices[0].id, baseUrl: choices[0].baseUrl, model: choices[0].models[0] ?? "", name: "" })}
+          >
+            从目录里选
+          </button>
+          <button className={tabCls(d.tab === "custom")} onClick={() => onEdit({ tab: "custom", baseUrl: "", model: "" })}>
+            自定义接口
+          </button>
+        </div>
+      )}
+      {isNew && d.tab === "catalog" && (
+        <label className="block">
+          <span className={labelCls}>提供商</span>
+          <select
+            className={`${inputCls} h-9`}
+            value={d.catalogId}
+            onChange={(e) => {
+              const c = CATALOG.find((x) => x.id === e.target.value);
+              if (c) onEdit({ catalogId: c.id, baseUrl: c.baseUrl, model: c.models[0] ?? "" });
+            }}
+          >
+            {choices.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {d.tab === "custom" && (
+        <>
+          <label className="block">
+            <span className={labelCls}>名称</span>
+            <input className={inputCls} value={d.name ?? ""} placeholder="随便起，方便自己认" onChange={(e) => onEdit({ name: e.target.value })} />
+          </label>
+          <label className="block">
+            <span className={labelCls}>接口地址</span>
+            <input className={`${inputCls} num`} value={d.baseUrl} placeholder="https://…（Anthropic 兼容的地址）" onChange={(e) => onEdit({ baseUrl: e.target.value })} />
+          </label>
+        </>
+      )}
+      <div>
+        <span className={labelCls}>API Key</span>
+        <SecretInput value={d.apiKey} onChange={(v) => onEdit({ apiKey: v })} placeholder="sk-…" />
+        {entry && <span className="mt-1 block text-[11px] text-text-4">{entry.hint}</span>}
+      </div>
+      <div>
+        <span className={labelCls}>模型</span>
+        {!!entry?.models.length && (
+          <div className="mb-1.5 flex flex-wrap gap-1.5">
+            {entry.models.map((m) => (
+              <button
+                key={m}
+                onClick={() => onEdit({ model: m })}
+                className={`num rounded-full border px-2.5 py-1 text-[12px] ${
+                  d.model === m ? "border-accent bg-accent-dim text-accent" : "border-hairline text-text-2 hover:border-hairline-strong"
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+        )}
+        <input className={`${inputCls} num`} value={d.model} placeholder="模型名，照提供商控制台里的写" onChange={(e) => onEdit({ model: e.target.value })} />
+      </div>
+      {entry && (
+        <details>
+          <summary className="cursor-pointer select-none text-[12px] text-text-3 hover:text-text">自定义设置</summary>
+          <span className={`${labelCls} mt-2`}>接口地址</span>
+          <input className={`${inputCls} num`} value={d.baseUrl} onChange={(e) => onEdit({ baseUrl: e.target.value })} />
+          {d.baseUrl !== entry.baseUrl && (
+            <button className="mt-1 text-[11px] text-accent hover:underline" onClick={() => onEdit({ baseUrl: entry.baseUrl })}>
+              恢复默认地址
+            </button>
+          )}
+        </details>
+      )}
+      <div className="flex items-center gap-2 pt-0.5">
+        <SecondaryButton size="sm" disabled={!usable(d) || p.probe.state === "busy"} onClick={p.onTest}>
+          {p.probe.state === "busy" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+          测试连接
+        </SecondaryButton>
+        <span className="min-w-0 flex-1">
+          <ProbeText p={p.probe} />
+        </span>
+        <SecondaryButton size="sm" onClick={p.onCancel}>
+          取消
+        </SecondaryButton>
+        <PrimaryButton size="sm" disabled={!usable(d)} onClick={p.onDone}>
+          确定
+        </PrimaryButton>
+      </div>
+    </div>
+  );
 }
 
 /** 密钥输入框：默认遮住，可以点开看一眼 */
