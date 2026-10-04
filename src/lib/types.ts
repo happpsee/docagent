@@ -144,6 +144,8 @@ export interface QuizUnit {
   start: number;
   end: number;
   quizzed: boolean;
+  /** 这一段考的概念掌握得怎么样（0–1）；没出过题是 null */
+  mastery: number | null;
 }
 export interface LearnConcept {
   concept: string;
@@ -152,7 +154,30 @@ export interface LearnConcept {
   due: number;
   reps: number;
   lapses: number;
-  lastGrade: QuizResult["grade"];
+  /** 没考过（只是占了一行）时是空串 */
+  lastGrade: QuizResult["grade"] | "";
+  ignored: boolean;
+}
+/** 关于读者本人的一句话：背景、偏好、强项、弱项、易错点 */
+export interface LearnerNote {
+  id: number;
+  kind: "background" | "preference" | "strength" | "weakness" | "misconception";
+  content: string;
+  /** 批改时自动记下的：依据是哪道题、怎么答的 */
+  evidence: string;
+  bookId: string | null;
+  concept: string | null;
+  auto: boolean;
+  updatedAt: number;
+}
+/** 合上书时的小结 */
+export interface Trip {
+  highlights: number;
+  recalled: number;
+  partial: number;
+  lapsed: number;
+  /** 还没变成复习题的划线 */
+  pendingMarks: number;
 }
 /** 一本书学得怎么样 */
 export interface LearnOverview {

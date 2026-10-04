@@ -26,6 +26,8 @@ import type {
   QuizResult,
   QuizUnit,
   LearnOverview,
+  LearnerNote,
+  Trip,
 } from "./types";
 
 export interface ImportProgress {
@@ -168,6 +170,12 @@ export const quizUnit = (bookId: string, docId: string, unit: number) => invoke<
 export const quizAnswer = (itemId: number, answer: string) => invoke<QuizResult>("quiz_answer", { itemId, answer });
 /** 复习时换个问法：答过的题换成同一个概念的另一道（现出或轮换），没答过的原样返回 */
 export const quizVariant = (itemId: number) => invoke<QuizItem>("quiz_variant", { itemId });
+export const quizFromMarks = (bookId: string) => invoke<number>("quiz_from_marks", { bookId });
+export const learnIgnore = (bookId: string, concept: string, on: boolean) => invoke<void>("learn_ignore", { bookId, concept, on });
+export const learnerNotes = () => invoke<LearnerNote[] | null>("learner_notes").then((x) => x ?? []);
+export const learnerNoteSave = (id: number | null, kind: LearnerNote["kind"], content: string) => invoke<void>("learner_note_save", { id, kind, content });
+export const learnerNoteDelete = (id: number) => invoke<void>("learner_note_delete", { id });
+export const readingTrip = (bookId: string, since: number) => invoke<Trip>("reading_trip", { bookId, since });
 export const quizDue = (bookId: string | null) => invoke<QuizItem[]>("quiz_due", { bookId });
 export const learnOverviews = () => invoke<LearnOverview[] | null>("learn_overviews").then((x) => x ?? []);
 

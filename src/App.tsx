@@ -4,6 +4,7 @@ import { BookInfoModal, RemoveBookDialog, summaryText } from "./components/BookI
 import { ChatPanel } from "./components/ChatPanel";
 import { ImportDialog, planImport } from "./components/ImportDialog";
 import { IMPORT_EXTENSIONS, Library } from "./components/Library";
+import { TripCard } from "./components/TripCard";
 import { QuizSession } from "./components/QuizSession";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
@@ -14,6 +15,7 @@ import { resolveScope, resumePart } from "./lib/scope";
 import {
   DEFAULT_SETTINGS,
   type LearnOverview,
+  type Trip,
   type QuizItem,
   type AgentEvent,
   type Annotation,
@@ -37,6 +39,8 @@ const partsKey = (book: Book) => book.docs.slice(0, 60).map((d) => d.id).join(",
 type AgentState = "unconfigured" | "starting" | "ready" | "down";
 type View = "library" | "chat";
 
+const PROFILE_KIND: Record<string, string> = { background: "背景", preference: "偏好", strength: "强项", weakness: "弱项", misconception: "易错点" };
+
 export function App() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [agent, setAgent] = useState<AgentState>("unconfigured");
@@ -46,9 +50,20 @@ export function App() {
   const [learn, setLearn] = useState<Map<string, LearnOverview>>(new Map());
   /** 正在进行的一轮问答：读完一段的题，或者到期的复习。key 换了就是新的一轮 */
   const [quiz, setQuiz] = useState<{ key: number; title: string; fresh?: boolean; load: () => Promise<QuizItem[]> } | null>(null);
+  /** 关于读者本人的几句话，提问时带给助手 */
+  const profile = useRef("");
   const refreshLearn = useCallback(() => {
     void api.learnOverviews().then((list) => setLearn(new Map(list.map((o) => [o.bookId, o]))), () => {});
+    void api.learnerNotes().then((notes) => {
+      profile.current = notes
+        .slice(0, 12)
+        .map((n) => `- ${PROFILE_KIND[n.kind] ?? n.kind}：${n.content}${n.concept ? `（关于「${n.concept}」）` : ""}`)
+        .join("\n");
+    }, () => {});
   }, []);
+  /** 这一程：打开一本书时记下时刻和进度，合上时出小结 */
+  const tripStart = useRef<{ bookId: string; since: number; progress: number } | null>(null);
+  const [tripCard, setTripCard] = useState<{ bookId: string; title: string; minutes: number; gained: number; trip: Trip; story: boolean } | null>(null);
   useEffect(refreshLearn, [refreshLearn]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [current, setCurrent] = useState<Session | null>(null);
@@ -112,6 +127,9 @@ export function App() {
   const docs = useMemo(() => books.flatMap((b) => b.docs), [books]);
   const readingDoc = reading ? (docs.find((d) => d.id === reading.docId) ?? null) : null;
   const readingBook = readingDoc ? (books.find((b) => b.id === readingDoc.bookId) ?? null) : null;
+  if (readingBook && tripStart.current?.bookId !== readingBook.id) {
+    tripStart.current = { bookId: readingBook.id, since: Math.floor(Date.now() / 1000), progress: readingBook.progress ?? 0 };
+  }
   /** 这段对话属于哪本书。还没发第一句的新对话，归正开着的那本 */
   const sessionBook = current ? (books.find((b) => b.id === current.bookId) ?? null) : readingBook;
   const scope = current ? current.scope : pendingScope;
@@ -586,6 +604,7 @@ export function App() {
                   : book.docs.slice(0, 60).map((d) => ({ n: d.position + 1, docId: d.id, name: d.name, kind: d.kind, opened: d.opened })),
             }
           : undefined,
+        profile: profile.current || undefined,
         // 阅读器开着的话，告诉助手用户在看哪本、哪一篇、读到哪
         reading:
           readingDoc && readingBook && info?.docId === readingDoc.id
@@ -754,6 +773,16 @@ export function App() {
   const openHit = (h: Hit) => openDoc(h.docId, h.page, h.text);
 
   function closeReader() {
+    const started = tripStart.current;
+    tripStart.current = null;
+    if (started) {
+      const minutes = Math.round((Date.now() / 1000 - started.since) / 60);
+      void Promise.all([api.readingTrip(started.bookId, started.since), api.listBooks()]).then(([trip, list]) => {
+        const book = list.find((b) => b.id === started.bookId);
+        if (!book || (minutes < 2 && !trip.highlights && !(trip.recalled + trip.partial + trip.lapsed))) return;
+        setTripCard({ bookId: book.id, title: book.title, minutes, gained: Math.max(0, (book.progress ?? 0) - started.progress), trip, story: book.spoilerFree });
+      }, () => {});
+    }
     setReading(null);
     readingInfo.current = null;
     setCollapsed(false);
@@ -951,6 +980,7 @@ export function App() {
               const { id: docId } = readingDoc;
               setQuiz({ key: Date.now(), title: "考考这一段", load: () => api.quizUnit(bookId, docId, unit) });
             }}
+            onLearnChanged={refreshLearn}
             onReview={() => {
               const { id: bookId } = readingBook;
               setQuiz({ key: Date.now(), title: "复习", fresh: true, load: () => api.quizDue(bookId) });
@@ -1051,6 +1081,20 @@ export function App() {
         />
       )}
       {removing && <RemoveBookDialog book={removing} onCancel={() => setRemoving(null)} onConfirm={(withSessions) => void removeBook(removing, withSessions)} />}
+
+      {tripCard && !readingDoc && (
+        <TripCard
+          key={tripCard.bookId + tripCard.minutes}
+          bookId={tripCard.bookId}
+          title={tripCard.title}
+          minutes={tripCard.minutes}
+          gained={tripCard.gained}
+          trip={tripCard.trip}
+          makeQuestions={!tripCard.story}
+          onChanged={refreshLearn}
+          onClose={() => setTripCard(null)}
+        />
+      )}
 
       {quiz && (
         <QuizSession

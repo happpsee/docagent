@@ -191,7 +191,7 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
   if (cmd === "test_embedding") return 1024 as T;
   if (cmd === "list_sessions") return structuredClone(sessions) as T;
   if (cmd === "quiz_units")
-    return (args?.docId === "d4" ? xray.units.map((u, i) => ({ unit: u.unit, page: u.page, start: u.start, end: u.end, quizzed: i === 0 })) : []) as T;
+    return (args?.docId === "d4" ? xray.units.map((u, i) => ({ unit: u.unit, page: u.page, start: u.start, end: u.end, quizzed: i < 2, mastery: i === 0 ? 0.9 : i === 1 ? 0.3 : null })) : []) as T;
   if (cmd === "quiz_unit" || cmd === "quiz_due") return quizItems as T;
   if (cmd === "quiz_variant") return (quizItems.find((i) => i.id === args?.itemId) ?? quizItems[0]) as T;
   if (cmd === "quiz_answer")
@@ -201,12 +201,19 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       {
         bookId: "b4", total: 6, learned: 0.31, due: 2,
         concepts: [
-          { concept: "老陈", mastery: 0.93, due: Date.now() / 1000 + 5 * 86400, reps: 2, lapses: 0, lastGrade: "recalled" },
-          { concept: "年轻人", mastery: 0.62, due: Date.now() / 1000 - 3600, reps: 1, lapses: 0, lastGrade: "partial" },
-          { concept: "小满", mastery: 0.3, due: Date.now() / 1000 - 7200, reps: 2, lapses: 1, lastGrade: "lapsed" },
+          { concept: "老陈", mastery: 0.93, due: Date.now() / 1000 + 5 * 86400, reps: 2, lapses: 0, lastGrade: "recalled", ignored: false },
+          { concept: "年轻人", mastery: 0.62, due: Date.now() / 1000 - 3600, reps: 1, lapses: 0, lastGrade: "partial", ignored: false },
+          { concept: "小满", mastery: 0.3, due: Date.now() / 1000 - 7200, reps: 2, lapses: 1, lastGrade: "lapsed", ignored: false },
         ],
       },
     ] as T;
+  if (cmd === "learner_notes")
+    return [
+      { id: 1, kind: "misconception", content: "你把“认出相机”当成了老陈愣住的全部原因，漏了相机是他自己卖出去的", evidence: "问「老陈接过相机后为什么看了很久？」时答：因为他认出了这台相机", bookId: "b4", concept: "老陈", auto: true, updatedAt: Date.now() / 1000 - 3600 },
+      { id: 2, kind: "background", content: "做了 3 年前端，最近在补后端和协议", evidence: "", bookId: null, concept: null, auto: false, updatedAt: Date.now() / 1000 - 86400 },
+    ] as T;
+  if (cmd === "reading_trip") return { highlights: 3, recalled: 1, partial: 1, lapsed: 0, pendingMarks: 2 } as T;
+  if (cmd === "quiz_from_marks") return 2 as T;
   if (cmd === "recap") return "老陈守着一间相机修理店，雨夜里一个年轻人带来一台他三十年前卖出去的旧胶片机。相机是年轻人刚过世的外婆留下的，里面还有一卷没冲洗的底片，机身上刻着“赠予小满”。老陈答应三天后交照片——你停在他刚把底片取出来的地方。" as T;
   if (cmd === "xray_get") return (args?.bookId === "b4" ? xray : { units: [], total: 0 }) as T;
   if (cmd === "update_book") {

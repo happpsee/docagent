@@ -92,6 +92,8 @@ interface Props {
   onQuiz: (unit: number) => void;
   /** 复习这本书到期的概念 */
   onReview: () => void;
+  /** 忽略 / 恢复了一个概念：掌握度要重新取 */
+  onLearnChanged: () => void;
 }
 
 /** relocate 事件带出来的当前位置 */
@@ -141,6 +143,7 @@ export function Reader({
   learn,
   onQuiz,
   onReview,
+  onLearnChanged,
   onAsk,
   onOpenPart,
   onInfo,
@@ -1273,6 +1276,7 @@ export function Reader({
           </span>
         )}
         <span className="min-w-0 max-w-[40%] truncate">{where}</span>
+        <div className="relative flex min-w-0 flex-1 flex-col justify-center">
         <input
           type="range"
           min={0}
@@ -1282,9 +1286,20 @@ export function Reader({
           onPointerUp={commitDrag}
           onKeyUp={commitDrag}
           onBlur={commitDrag}
-          className="reader-progress min-w-0 flex-1"
+          className="reader-progress w-full min-w-0"
           aria-label="阅读进度"
         />
+          {/* 每一段学得怎么样：读过、考过、掌握了，一眼看到哪段还是空白 */}
+          {quizUnits.length > 1 && quizUnits.some((u) => u.quizzed) && (
+            <div className="pointer-events-none absolute inset-x-0 -bottom-0.5 flex h-[3px] gap-px" aria-hidden>
+              {quizUnits.map((u) => {
+                const read = u.end <= seen.fraction + 1e-6;
+                const color = u.mastery == null ? (read ? "#8a878055" : "#8a878022") : u.mastery >= 0.85 ? "#4f8a5b" : u.mastery >= 0.5 ? "#c9952a" : "#c2603c";
+                return <span key={u.unit} className="rounded-full" style={{ flexGrow: Math.max(0.001, u.end - u.start), background: color }} />;
+              })}
+            </div>
+          )}
+        </div>
         <span className="num w-9 shrink-0 text-right">{percent}%</span>
       </footer>
 
@@ -1294,6 +1309,8 @@ export function Reader({
           figures={figures}
           hidden={xray.units.length - seenUnits.length}
           learn={learn}
+          bookId={book.id}
+          onLearnChanged={onLearnChanged}
           onClose={() => setShowGraph(false)}
           onGoQuote={goQuote}
           onAskAbout={askAbout}
@@ -1327,6 +1344,16 @@ export function Reader({
             }}
           >
             考考我这一段
+          </button>
+          <button
+            role="menuitem"
+            className="block w-full rounded-lg px-2.5 py-1.5 text-left text-[13px] text-text-2 hover:bg-nav-card hover:text-text"
+            onClick={() => {
+              setShowQuick(false);
+              setShowGraph(true);
+            }}
+          >
+            掌握情况{learn ? <span className="num ml-1.5 text-good">学会 {Math.round(learn.learned * 100)}%</span> : null}
           </button>
           {(learn?.due ?? 0) > 0 && (
             <button

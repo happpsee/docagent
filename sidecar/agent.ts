@@ -281,6 +281,8 @@ interface Ask {
   /** 关联的那本书的分篇列表：这一问带了就用这一问的，没带用之前记下的 */
   parts?: Part[];
   reading?: Reading;
+  /** 关于读者本人的几句话（背景、偏好、易错点），界面从「我的画像」里取来 */
+  profile?: string;
   /** 这一轮发出去、还没答复的审批 */
   approvals: Set<string>;
   /** 同一次工具调用只问一次：钩子和 canUseTool 都会来问，按调用 id 记住结论 */
@@ -941,7 +943,9 @@ function preface(ask: Ask): string {
   // 聊着这本、开着另一本（或者没开书）时，两本都要交代，免得模型把「这本书」认错
   if (book && book.id !== r?.bookId) bits.push(`这段对话关联的书${r ? "是" : "："}《${book.title}》`);
   if (book?.scopeLabel) bits.push(`检索范围：${book.scopeLabel}`);
-  if (!bits.length) return "";
+  // 读者的画像：讲解时照着他的背景和偏好来，碰到他容易错的地方多说一句
+  const who = ask.profile ? `（关于这位读者，他自己能看到也能改；讲解时照顾到，但不要复述给他听：\n${ask.profile}）\n\n` : "";
+  if (!bits.length) return who;
   let out = bits.join("；");
   if (r?.spoilerFree) {
     out += "。用户开了防剧透：这本书只能依据他已经读过的部分回答，不要透露、不要暗示后面的情节；问到后面的事就说还没读到";
@@ -960,7 +964,7 @@ function preface(ask: Ask): string {
         : "";
     out += `。\n《${book.title}》的分篇（序号就是工具参数里的 part；标了「打开过」的是用户翻开过的）：\n${lines.join("\n")}${cut}\n`;
   }
-  return `（${out}）\n\n`;
+  return `（${out}）\n\n${who}`;
 }
 
 async function handleAsk(msg: {
@@ -972,6 +976,7 @@ async function handleAsk(msg: {
   cwd?: string;
   book?: unknown;
   reading?: unknown;
+  profile?: unknown;
 }) {
   const { id, sessionId } = msg;
   const cwd = realPath(msg.cwd && existsSync(msg.cwd) ? msg.cwd : HOME, "/");
@@ -986,6 +991,7 @@ async function handleAsk(msg: {
     book,
     parts: book ? (book.parts ?? partsByBook.get(book.id)) : undefined,
     reading: readingOf(msg.reading),
+    profile: typeof msg.profile === "string" && msg.profile.trim() ? msg.profile.slice(0, 2000) : undefined,
     approvals: new Set(),
     decided: new Map(),
     ended: false,

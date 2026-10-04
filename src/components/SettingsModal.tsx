@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from "react";
-import { Check, Database, Eye, EyeOff, Loader2, Plus, Puzzle, Search, Sparkles, Trash2 } from "lucide-react";
+import { Check, Database, Eye, EyeOff, Loader2, Pencil, Plus, Puzzle, Search, Sparkles, Trash2, UserRound } from "lucide-react";
 import * as api from "@/lib/api";
-import type { ExtensionSet, Extensions, ProviderConfig, Settings } from "@/lib/types";
+import type { ExtensionSet, Extensions, LearnerNote, ProviderConfig, Settings } from "@/lib/types";
 import { GlassModal } from "./ui/GlassModal";
 import { ModalCloseButton } from "./ui/ModalCloseButton";
 import { PrimaryButton } from "./ui/PrimaryButton";
@@ -27,7 +27,7 @@ const CATALOG: { id: string; name: string; baseUrl: string; models: string[]; hi
   { id: "anthropic", name: "Anthropic", baseUrl: "https://api.anthropic.com", models: ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-4-5-20251001"], hint: "在 console.anthropic.com 申请" },
 ];
 
-type Section = "model" | "search" | "ext" | "data";
+type Section = "model" | "profile" | "search" | "ext" | "data";
 type Probe = { state: "idle" } | { state: "busy" } | { state: "ok"; text: string } | { state: "bad"; text: string };
 
 const inputCls =
@@ -154,6 +154,7 @@ export function SettingsModal({ settings, onSave, onClose, onDocsChanged, extens
 
   const nav: [Section, string, typeof Sparkles][] = [
     ["model", "模型", Sparkles],
+    ["profile", "我的画像", UserRound],
     ["search", "检索", Search],
     ["ext", "技能与 MCP", Puzzle],
     ["data", "数据", Database],
@@ -311,6 +312,7 @@ export function SettingsModal({ settings, onSave, onClose, onDocsChanged, extens
               </div>
             )}
 
+            {section === "profile" && <ProfileSection />}
             {section === "data" && <DataSection onDocsChanged={onDocsChanged} />}
           </div>
 
@@ -490,6 +492,112 @@ function ProbeText({ p }: { p: Probe }) {
   }
   if (p.state === "bad") return <span className="min-w-0 break-all text-[12px] leading-snug text-danger">{p.text}</span>;
   return null;
+}
+
+const NOTE_KINDS: [LearnerNote["kind"], string, string][] = [
+  ["background", "背景", "比如：做了 3 年前端，最近在补后端和协议"],
+  ["preference", "偏好", "比如：先讲结论，再展开原理"],
+  ["strength", "强项", "比如：看代码比看文字快"],
+  ["weakness", "弱项", "比如：一碰到并发就容易乱"],
+  ["misconception", "易错点", "比如：总以为通知也会有响应"],
+];
+
+/** 我的画像：助手每次回答前都会读一遍这里。易错点是批改时自动记下的，记得不准可以直接改，
+ *  它还没注意到的也可以自己写——改过的就算你写的，之后不会被自动覆盖 */
+function ProfileSection() {
+  const [notes, setNotes] = useState<LearnerNote[] | null>(null);
+  /** 正在写的一条：id 为 null 是新加 */
+  const [draft, setDraft] = useState<{ id: number | null; kind: LearnerNote["kind"]; content: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = () => void api.learnerNotes().then(setNotes, (err) => setError(String(err)));
+  useEffect(load, []);
+  const kindName = (k: string) => NOTE_KINDS.find((x) => x[0] === k)?.[1] ?? k;
+
+  const save = () => {
+    if (!draft?.content.trim()) return;
+    void api.learnerNoteSave(draft.id, draft.kind, draft.content).then(() => {
+      setDraft(null);
+      load();
+    }, (err) => setError(String(err)));
+  };
+
+  const editor = draft && (
+    <div className="space-y-2 rounded-xl border border-hairline-strong bg-surface-2 p-3">
+      <div className="flex flex-wrap gap-1">
+        {NOTE_KINDS.map(([k, name]) => (
+          <button
+            key={k}
+            onClick={() => setDraft({ ...draft, kind: k })}
+            className={`rounded-full px-2.5 py-0.5 text-[12px] ${draft.kind === k ? "bg-text text-bg" : "bg-segment-bg text-text-3 hover:text-text"}`}
+          >
+            {name}
+          </button>
+        ))}
+      </div>
+      <textarea
+        autoFocus
+        className={`${inputCls} h-16 resize-none leading-relaxed`}
+        maxLength={300}
+        value={draft.content}
+        placeholder={NOTE_KINDS.find((x) => x[0] === draft.kind)?.[2]}
+        onChange={(e) => setDraft({ ...draft, content: e.target.value })}
+      />
+      <div className="flex justify-end gap-2">
+        <SecondaryButton size="sm" onClick={() => setDraft(null)}>
+          取消
+        </SecondaryButton>
+        <PrimaryButton size="sm" disabled={!draft.content.trim()} onClick={save}>
+          保存
+        </PrimaryButton>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-2">
+      <p className="pb-1 text-[12px] leading-relaxed text-text-3">
+        助手每次回答前都会读一遍这里：你的背景、偏好，和答题时暴露出来的易错点。写得不准的直接改；它还没注意到的，也可以告诉它。只存在这台电脑上，提问时会随问题一起发给模型。
+      </p>
+      {notes?.map((n) =>
+        draft?.id === n.id ? (
+          <div key={n.id}>{editor}</div>
+        ) : (
+          <div key={n.id} className="rounded-xl border border-hairline px-3.5 py-2.5">
+            <div className="flex items-start gap-2">
+              <span className={`mt-px shrink-0 rounded-full px-1.5 py-px text-[10px] ${n.kind === "misconception" ? "bg-accent-dim text-accent" : "bg-segment-bg text-text-3"}`}>{kindName(n.kind)}</span>
+              <span className="min-w-0 flex-1 text-[13px] leading-relaxed text-text">{n.content}</span>
+              <button className="shrink-0 rounded p-1 text-text-4 hover:bg-nav-card hover:text-text" aria-label="修改" title="修改" onClick={() => setDraft({ id: n.id, kind: n.kind, content: n.content })}>
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+              <button className="shrink-0 rounded p-1 text-text-4 hover:bg-nav-card hover:text-danger" aria-label="删除" title="删除：助手不再记着这一条" onClick={() => void api.learnerNoteDelete(n.id).then(load, (err) => setError(String(err)))}>
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            {(n.auto || n.concept) && (
+              <div className="mt-1 text-[11.5px] leading-relaxed text-text-4">
+                {n.auto ? "批改时记下的" : "你写的"}
+                {n.concept ? ` · 关于「${n.concept}」` : ""}
+                {n.evidence ? ` · 依据：${n.evidence}` : ""}
+              </div>
+            )}
+          </div>
+        ),
+      )}
+      {notes && !notes.length && !draft && <p className="py-4 text-center text-[12.5px] text-text-4">助手还不太认识你。答几道题它会记下你容易错的地方，也可以现在先告诉它一些。</p>}
+      {draft && draft.id === null ? (
+        editor
+      ) : (
+        <button
+          className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-hairline-strong px-3.5 py-2.5 text-[13px] text-text-2 hover:bg-nav-card hover:text-text"
+          onClick={() => setDraft({ id: null, kind: "background", content: "" })}
+        >
+          <Plus className="h-4 w-4" />
+          写一条
+        </button>
+      )}
+      {error && <p className="break-all text-[12px] text-danger">{error}</p>}
+    </div>
+  );
 }
 
 /** 数据：存了多少、放在哪、重建索引 */

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY, type Simulation, type SimulationLinkDatum, type SimulationNodeDatum } from "d3-force";
 import { X } from "lucide-react";
+import * as api from "@/lib/api";
 import type { LearnConcept, LearnOverview, XRayUnit } from "@/lib/types";
 import { dueText } from "@/components/QuizSession";
 import { typeTone, type Figure } from "./XRay";
@@ -27,7 +28,7 @@ const colorOf = (type: string) => COLOR[type] ?? "#8a8780";
 /** 掌握地图的颜色：没考过灰，记得牢绿，快忘了黄，没答上来 / 忘了红 */
 const MASTERY = { none: "#b9b6ae", good: "#4f8a5b", weak: "#c9952a", bad: "#c2603c" };
 function masteryColor(c: LearnConcept | undefined): string {
-  if (!c) return MASTERY.none;
+  if (!c || c.reps === 0 || c.ignored) return MASTERY.none;
   if (c.lastGrade === "lapsed" || c.mastery < 0.5) return MASTERY.bad;
   return c.mastery >= 0.85 && c.lastGrade === "recalled" ? MASTERY.good : MASTERY.weak;
 }
@@ -71,6 +72,9 @@ export function GraphView(p: {
   hidden: number;
   /** 这本书的掌握度；考过题才有，有了图就按掌握度上色 */
   learn: LearnOverview | null;
+  bookId: string;
+  /** 忽略 / 恢复了一个概念 */
+  onLearnChanged: () => void;
   onClose: () => void;
   onGoQuote: (quote: string, unit: XRayUnit) => void;
   onAskAbout: (name: string) => void;
@@ -84,6 +88,8 @@ export function GraphView(p: {
   const [hover, setHover] = useState<string | null>(null);
   const state = useMemo(() => new Map((p.learn?.concepts ?? []).map((c) => [c.concept, c])), [p.learn]);
   const [byMastery, setByMastery] = useState(() => !!p.learn?.concepts.length);
+  /** 图，还是按记忆状态分档的清单。没透视过的书没有图，直接看清单 */
+  const [mode, setMode] = useState<"map" | "list">(() => (p.figures.length ? "map" : "list"));
   const fill = (n: GNode) => (byMastery ? masteryColor(state.get(n.id)) : colorOf(n.figure.type));
   const graph = useMemo(() => graphOf(p.units, p.figures), [p.units, p.figures]);
   const drag = useRef<{ node: GNode | null; x: number; y: number; moved: boolean } | null>(null);
@@ -138,13 +144,20 @@ export function GraphView(p: {
   return (
     <div className="absolute inset-0 z-40 flex flex-col bg-bg" role="dialog" aria-label="关系图">
       <div className="flex h-11 shrink-0 items-center gap-3 border-b border-hairline px-4">
-        <span className="shrink-0 whitespace-nowrap text-[13px] font-medium text-text">关系图</span>
+        <div className="flex shrink-0 gap-0.5 whitespace-nowrap rounded-lg bg-segment-bg p-0.5 text-[12px]">
+          <button className={`rounded-md px-2.5 py-0.5 ${mode === "map" ? "bg-surface-2 text-text shadow-sm" : "text-text-3"}`} disabled={!p.figures.length} onClick={() => setMode("map")}>
+            关系图
+          </button>
+          <button className={`rounded-md px-2.5 py-0.5 ${mode === "list" ? "bg-surface-2 text-text shadow-sm" : "text-text-3"}`} onClick={() => setMode("list")}>
+            记忆看板
+          </button>
+        </div>
         <span className="min-w-0 truncate text-[12px] text-text-4" title="滚轮缩放 · 拖动空白处平移 · 拖动圆点调整">
           {graph.nodes.length} 个人物与概念 · {graph.links.length} 条关系
           {p.hidden > 0 ? " · 只画了你读过的部分，读到后面会长出新的" : ""}
         </span>
         <span className="flex-1" />
-        {byMastery && (
+        {byMastery && mode === "map" && (
           <span className="flex shrink-0 items-center gap-2.5 whitespace-nowrap text-[11px] text-text-3">
             {(
               [
@@ -162,7 +175,7 @@ export function GraphView(p: {
             {p.learn && <span className="num text-good">学会 {Math.round(p.learn.learned * 100)}%</span>}
           </span>
         )}
-        <div className="flex shrink-0 gap-0.5 whitespace-nowrap rounded-lg bg-segment-bg p-0.5 text-[12px]">
+        <div className={`shrink-0 gap-0.5 whitespace-nowrap rounded-lg bg-segment-bg p-0.5 text-[12px] ${mode === "map" ? "flex" : "hidden"}`}>
           <button className={`rounded-md px-2 py-0.5 ${byMastery ? "bg-surface-2 text-text shadow-sm" : "text-text-3"}`} onClick={() => setByMastery(true)}>
             掌握度
           </button>
@@ -174,8 +187,10 @@ export function GraphView(p: {
           <X className="h-4 w-4" />
         </button>
       </div>
+      {mode === "list" && <MemoryBoard learn={p.learn} figures={p.figures} bookId={p.bookId} onChanged={p.onLearnChanged} />}
       <div
         ref={box}
+        style={{ display: mode === "map" ? undefined : "none" }}
         className="relative min-h-0 flex-1 cursor-grab select-none overflow-hidden active:cursor-grabbing"
         onWheel={(e) => {
           const k = Math.min(3, Math.max(0.3, view.k * (e.deltaY < 0 ? 1.1 : 0.9)));
@@ -304,6 +319,108 @@ export function GraphView(p: {
               </button>
             </div>
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** 记忆看板：按记忆状态把概念分成几档，最该复习的在最上面。不想管的可以忽略 */
+function MemoryBoard(p: { learn: LearnOverview | null; figures: Figure[]; bookId: string; onChanged: () => void }) {
+  const now = Date.now() / 1000;
+  const all = p.learn?.concepts ?? [];
+  const tested = all.filter((c) => !c.ignored && c.reps > 0);
+  const known = new Set(all.map((c) => c.concept));
+  const groups: { name: string; hint: string; color: string; items: LearnConcept[] }[] = [
+    { name: "急需复习", hint: "没答上来，或者已经到了该复习的时候", color: MASTERY.bad, items: tested.filter((c) => c.lastGrade === "lapsed" || c.mastery < 0.5 || c.due <= now) },
+    { name: "衰减中", hint: "还记得，但在往下掉", color: MASTERY.weak, items: tested.filter((c) => !(c.lastGrade === "lapsed" || c.mastery < 0.5 || c.due <= now) && c.mastery < 0.85) },
+    { name: "记忆牢固", hint: "", color: MASTERY.good, items: tested.filter((c) => c.lastGrade !== "lapsed" && c.due > now && c.mastery >= 0.85) },
+  ];
+  const untested = [
+    ...all.filter((c) => !c.ignored && c.reps === 0).map((c) => c.concept),
+    ...p.figures.filter((f) => !known.has(f.name)).map((f) => f.name),
+  ];
+  const ignored = all.filter((c) => c.ignored);
+  const toggle = (concept: string, on: boolean) => void api.learnIgnore(p.bookId, concept, on).then(p.onChanged, () => {});
+  const small = "shrink-0 text-[11.5px] text-text-4 hover:text-accent";
+
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+      <div className="mx-auto max-w-[680px]">
+        <div className="flex items-baseline gap-3">
+          <span className="display-serif text-[22px] text-text">学会 {Math.round((p.learn?.learned ?? 0) * 100)}%</span>
+          <span className="text-[12px] text-text-4">
+            {p.learn?.total ?? p.figures.length} 个概念 · 考过 {tested.length} 个{(p.learn?.due ?? 0) > 0 ? ` · ${p.learn?.due} 个该复习` : ""}
+          </span>
+        </div>
+        <p className="mt-1 text-[12px] leading-relaxed text-text-4">
+          百分比是按距上次作答过了多久推算的“现在还记得多少”，不复习会自己往下掉——它不是对你的评分。没考过的概念按 0 算。
+        </p>
+
+        {!tested.length && <p className="mt-8 text-[13px] text-text-3">还没考过题。读完一段，在页面底下点“开始”，或者从右上角的一键动作里点“考考我这一段”。</p>}
+
+        {groups.map(
+          (g) =>
+            g.items.length > 0 && (
+              <section key={g.name} className="mt-6">
+                <h3 className="flex items-center gap-2 text-[12px] font-medium text-text-2">
+                  <span className="h-2 w-2 rounded-full" style={{ background: g.color }} />
+                  {g.name} <span className="num text-text-4">{g.items.length}</span>
+                  {g.hint && <span className="font-normal text-text-4">{g.hint}</span>}
+                </h3>
+                <ul className="mt-2 divide-y divide-hairline-soft rounded-xl border border-hairline">
+                  {g.items.map((c) => (
+                    <li key={c.concept} className="flex items-center gap-3 px-3.5 py-2">
+                      <span className="min-w-0 flex-1 truncate text-[13px] text-text">{c.concept}</span>
+                      <span className="h-1 w-20 shrink-0 overflow-hidden rounded-full bg-segment-bg">
+                        <span className="block h-full rounded-full" style={{ width: `${Math.round(c.mastery * 100)}%`, background: g.color }} />
+                      </span>
+                      <span className="num w-9 shrink-0 text-right text-[12px] text-text-2">{Math.round(c.mastery * 100)}%</span>
+                      <span className="w-[120px] shrink-0 text-[11.5px] text-text-4">
+                        考过 {c.reps} 次 · {c.due <= now ? "现在该复习" : `${dueText(c.due)}复习`}
+                      </span>
+                      <button className={small} title="不再提醒复习，也不算进学会了多少" onClick={() => toggle(c.concept, true)}>
+                        忽略
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ),
+        )}
+
+        {untested.length > 0 && (
+          <section className="mt-6">
+            <h3 className="flex items-center gap-2 text-[12px] font-medium text-text-2">
+              <span className="h-2 w-2 rounded-full" style={{ background: MASTERY.none }} />
+              没考过 <span className="num text-text-4">{untested.length}</span>
+            </h3>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {untested.map((name) => (
+                <span key={name} className="group inline-flex items-center gap-1 rounded-full bg-segment-bg px-2.5 py-1 text-[12px] text-text-2">
+                  {name}
+                  <button className="text-text-4 hover:text-accent" title="忽略这个概念" aria-label={`忽略 ${name}`} onClick={() => toggle(name, true)}>
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {ignored.length > 0 && (
+          <section className="mt-6">
+            <h3 className="text-[12px] font-medium text-text-3">
+              已忽略 <span className="num text-text-4">{ignored.length}</span>
+            </h3>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {ignored.map((c) => (
+                <button key={c.concept} className="rounded-full border border-hairline px-2.5 py-1 text-[12px] text-text-4 hover:border-accent hover:text-accent" title="恢复：重新算进来、到期提醒" onClick={() => toggle(c.concept, false)}>
+                  {c.concept} · 恢复
+                </button>
+              ))}
+            </div>
+          </section>
         )}
       </div>
     </div>
