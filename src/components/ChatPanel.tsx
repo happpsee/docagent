@@ -1,13 +1,15 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { Check, ChevronRight, Circle, Loader2, NotebookPen } from "lucide-react";
-import { citedNumbers, pageLabel } from "@/lib/citations";
-import type { Block, Hit, Message, Quote } from "@/lib/types";
+import { Check, ChevronRight, Circle, History, Loader2, NotebookPen, Plus } from "lucide-react";
+import { citedNumbers, whereLabel } from "@/lib/citations";
+import type { Block, Book, Doc, Hit, Message, Quote, Scope, Session } from "@/lib/types";
+import { ago } from "./BookInfoModal";
+import { Popover } from "./Library";
 import { StreamMarkdown } from "./StreamMarkdown";
 import { Composer } from "./Composer";
 
 interface Props {
   title: string | null;
-  /** 旁边开着文档时，对话缩在右侧窄栏里 */
+  /** 旁边开着书时，对话缩在右侧窄栏里 */
   compact?: boolean;
   messages: Message[];
   busy: boolean;
@@ -15,8 +17,6 @@ interface Props {
   startedAt: number | null;
   ready: boolean;
   model: string;
-  docCount: number;
-  scopeCount: number;
   onSend: (q: string) => void;
   onStop: () => void;
   onCite: (hit: Hit) => void;
@@ -29,12 +29,31 @@ interface Props {
   workspace: string | null;
   onPickWorkspace: () => void;
   onClearWorkspace: () => void;
+
+  books: Book[];
+  /** 这段对话属于哪本书。还没发第一句的新对话：正开着的那本（发出去就归它） */
+  book: Book | null;
+  /** 阅读器里开着的书和篇 */
+  openBook: Book | null;
+  openDoc: Doc | null;
+  /** 开着的这本书聊过的对话，新的在前 */
+  bookSessions: Session[];
+  currentId: string | null;
+  scope: Scope | null;
+  onScope: (s: Scope | null) => void;
+  onSpoiler: (book: Book, on: boolean) => void;
+  onOpenSession: (s: Session) => void;
+  /** 不离开阅读器，为开着的这本书开一段新对话 */
+  onNewBookChat: () => void;
+  /** 把现在这段（不属于任何书的）对话归到开着的这本书下面 */
+  onLinkToOpenBook: () => void;
 }
 
 const SUGGESTIONS = ["这些资料主要讲了什么？", "帮我看看某个项目的代码结构", "把要点整理成一份文档"];
 
 export function ChatPanel(p: Props) {
   const [input, setInput] = useState("");
+  const [history, setHistory] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   /** 用户是不是贴着底部：是才跟着新内容往下滚，往上翻着看的时候不打扰 */
   const stick = useRef(true);
@@ -67,51 +86,154 @@ export function ChatPanel(p: Props) {
       busy={p.busy}
       ready={p.ready}
       model={p.model}
-      docCount={p.docCount}
-      scopeCount={p.scopeCount}
+      compact={p.compact}
       autoFocus
       quote={p.quote}
       onClearQuote={p.onClearQuote}
       workspace={p.workspace}
       onPickWorkspace={p.onPickWorkspace}
       onClearWorkspace={p.onClearWorkspace}
+      books={p.books}
+      book={p.book}
+      openDoc={p.openDoc}
+      scope={p.scope}
+      onScope={p.onScope}
+      onSpoiler={p.onSpoiler}
     />
   );
+
+  const icon = "grid h-7 w-7 place-items-center rounded-md text-text-3 hover:bg-nav-card hover:text-text disabled:opacity-40";
+  const others = p.bookSessions.filter((s) => s.id !== p.currentId);
+
+  /** 右侧窄栏顶上的一条：这是哪本书的哪段对话、这本书还聊过什么、开一段新的 */
+  const dockHeader = p.compact && p.openBook && (
+    <header className="relative flex items-center gap-1 border-b border-hairline-soft py-2 pl-4 pr-2">
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[13px] text-text-2">{p.title ?? "新对话"}</div>
+        <div className="truncate text-[11px] text-text-4">
+          {p.book ? `《${p.book.title}》的对话` : p.messages.length ? "和书无关的对话" : `《${p.openBook.title}》的对话`}
+        </div>
+      </div>
+      <button
+        className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[11px] text-text-3 hover:bg-nav-card hover:text-text disabled:opacity-40"
+        aria-haspopup="menu"
+        aria-label="这本书聊过的对话"
+        title="这本书聊过的对话"
+        disabled={!p.bookSessions.length}
+        onClick={() => setHistory((v) => !v)}
+      >
+        <History className="h-3.5 w-3.5" />
+        {p.bookSessions.length > 0 && <span className="num">{p.bookSessions.length}</span>}
+      </button>
+      <button className={icon} aria-label="为这本书开新对话" title="为这本书开一段新对话" disabled={p.busy} onClick={p.onNewBookChat}>
+        <Plus className="h-4 w-4" />
+      </button>
+      {history && (
+        <Popover onClose={() => setHistory(false)} className="absolute right-2 top-full z-30 mt-1 max-h-[320px] w-[300px] overflow-y-auto">
+          <div className="px-2.5 pb-1 pt-1.5 text-[11px] text-text-4">《{p.openBook.title}》聊过的</div>
+          {p.bookSessions.map((s) => (
+            <button
+              key={s.id}
+              role="menuitem"
+              disabled={p.busy}
+              onClick={() => {
+                setHistory(false);
+                p.onOpenSession(s);
+              }}
+              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] hover:bg-nav-card disabled:opacity-50 ${
+                s.id === p.currentId ? "text-accent" : "text-text-2"
+              }`}
+            >
+              <span className="min-w-0 flex-1 truncate">{s.title}</span>
+              <span className="num shrink-0 text-[10px] text-text-4">{ago(s.updatedAt)}</span>
+            </button>
+          ))}
+        </Popover>
+      )}
+    </header>
+  );
+
+  /** 对话和开着的书对不上的时候说一声：这段对话是另一本书的，或者不属于任何书 */
+  const mismatch =
+    p.compact && p.openBook && p.messages.length > 0 ? (
+      p.book && p.book.id !== p.openBook.id ? (
+        <div className="border-b border-hairline-soft bg-warm-tint-faint px-4 py-1.5 text-[12px] text-text-3">
+          这是《{p.book.title}》的对话。
+          <button className="text-accent hover:underline disabled:opacity-50" disabled={p.busy} onClick={p.onNewBookChat}>
+            为《{p.openBook.title}》开新对话
+          </button>
+        </div>
+      ) : !p.book ? (
+        <div className="border-b border-hairline-soft bg-warm-tint-faint px-4 py-1.5 text-[12px] text-text-3">
+          这段对话不属于任何一本书。
+          <button className="text-accent hover:underline disabled:opacity-50" disabled={p.busy} onClick={p.onLinkToOpenBook}>
+            归到《{p.openBook.title}》
+          </button>
+          <span className="mx-1 text-text-4">·</span>
+          <button className="text-accent hover:underline disabled:opacity-50" disabled={p.busy} onClick={p.onNewBookChat}>
+            开新对话
+          </button>
+        </div>
+      ) : null
+    ) : null;
 
   // 空状态：问候语和输入框一起居中，像一张信纸的开头
   if (p.messages.length === 0) {
     const hour = new Date().getHours();
     const hello = hour < 6 ? "夜深了" : hour < 12 ? "早上好" : hour < 18 ? "下午好" : "晚上好";
     return (
-      <section className={`flex min-w-0 flex-1 flex-col items-center justify-center pb-[8vh] ${p.compact ? "px-4" : "px-6"}`}>
-        <div className="w-full max-w-[680px]">
-          <h1
-            className={`display-serif flex items-center justify-center gap-3 tracking-tight text-text ${
-              p.compact ? "text-[20px]" : "text-[32px]"
-            }`}
-          >
-            <span className="text-accent">✳</span>
-            {p.compact ? "就这份文档问点什么？" : `${hello}，想了解点什么？`}
-          </h1>
-          <div className="mt-7">{composer}</div>
-          {p.compact ? null : p.docCount > 0 ? (
-            <div className="mt-4 flex flex-wrap justify-center gap-2">
-              {SUGGESTIONS.map((s) => (
-                <button
-                  key={s}
-                  className="rounded-full border border-hairline bg-surface-2/60 px-3.5 py-1.5 text-[13px] text-text-2 hover:border-hairline-strong hover:bg-surface-2 hover:text-text"
-                  onClick={() => submit(s)}
-                  disabled={!p.ready}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="mt-4 text-center text-[13px] text-text-3">
-              可以直接聊，也可以让我读本地项目、整理文件。导入文档后，我会优先从里面找答案并标出出处。
-            </p>
-          )}
+      <section className="flex min-w-0 flex-1 flex-col">
+        {dockHeader}
+        <div className={`flex flex-1 flex-col items-center justify-center pb-[8vh] ${p.compact ? "px-4" : "px-6"}`}>
+          <div className="w-full max-w-[680px]">
+            <h1
+              className={`display-serif flex items-center justify-center gap-3 tracking-tight text-text ${
+                p.compact ? "text-[19px]" : "text-[32px]"
+              }`}
+            >
+              <span className="text-accent">✳</span>
+              <span className="min-w-0 truncate">
+                {p.compact ? `就${p.openBook ? `《${p.openBook.title}》` : "这本书"}问点什么？` : `${hello}，想了解点什么？`}
+              </span>
+            </h1>
+            <div className="mt-7">{composer}</div>
+            {p.compact ? (
+              others.length > 0 && (
+                <div className="mt-5">
+                  <div className="px-1 text-[11px] text-text-4">这本书聊过的</div>
+                  <div className="mt-1">
+                    {others.slice(0, 5).map((s) => (
+                      <button
+                        key={s.id}
+                        onClick={() => p.onOpenSession(s)}
+                        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] text-text-2 hover:bg-nav-card hover:text-text"
+                      >
+                        <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                        <span className="num shrink-0 text-[10px] text-text-4">{ago(s.updatedAt)}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )
+            ) : p.books.length > 0 ? (
+              <div className="mt-4 flex flex-wrap justify-center gap-2">
+                {SUGGESTIONS.map((s) => (
+                  <button
+                    key={s}
+                    className="rounded-full border border-hairline bg-surface-2/60 px-3.5 py-1.5 text-[13px] text-text-2 hover:border-hairline-strong hover:bg-surface-2 hover:text-text"
+                    onClick={() => submit(s)}
+                    disabled={!p.ready}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-4 text-center text-[13px] text-text-3">
+                可以直接聊，也可以让我读本地项目、整理文件。书架上有书之后，我会优先从里面找答案并标出出处。
+              </p>
+            )}
+          </div>
         </div>
       </section>
     );
@@ -119,8 +241,13 @@ export function ChatPanel(p: Props) {
 
   return (
     <section className="flex min-w-0 flex-1 flex-col">
+      {dockHeader}
+      {mismatch}
       {p.title && !p.compact && (
-        <header className="truncate px-6 py-3 text-[13px] text-text-3">{p.title}</header>
+        <header className="truncate px-6 py-3 text-[13px] text-text-3">
+          {p.title}
+          {p.book && <span className="ml-2 text-text-4">《{p.book.title}》</span>}
+        </header>
       )}
 
       <div
@@ -144,7 +271,7 @@ export function ChatPanel(p: Props) {
                     <div className="line-clamp-3 text-[12px] leading-5 text-text-2">{m.quote.text}</div>
                     <div className="mt-0.5 text-[11px] text-text-4">
                       {m.quote.docTitle}
-                      {pageLabel(m.quote.docTitle, m.quote.page)}
+                      {whereLabel(m.quote.kind, m.quote.docTitle, m.quote.page)}
                     </div>
                   </button>
                 )}
@@ -171,7 +298,7 @@ export function ChatPanel(p: Props) {
       <div className={`mx-auto w-full max-w-[740px] pb-3 ${p.compact ? "px-3" : "px-6"}`}>
         {composer}
         <p className="mt-2 text-center text-[11px] text-text-4">
-          回答可能出错。带编号的结论来自你的文档，点开可以核对原文。
+          回答可能出错。带编号的结论来自你的书，点开可以核对原文。
         </p>
       </div>
     </section>
@@ -234,7 +361,7 @@ function AssistantView({
                 <span className="num text-accent">[{n}]</span>
                 <span className="truncate">
                   {h.docTitle}
-                  {pageLabel(h.docTitle, h.page)}
+                  {whereLabel(h.docKind, h.docTitle, h.page)}
                 </span>
               </button>
             );
@@ -336,11 +463,14 @@ function describe(name: string, input: Record<string, unknown>): { label: string
     case "list_notes":
       return { label: "读我的划线和笔记", arg: "" };
     case "read_section":
-      return { label: "读原文", arg: input.number ? `第 ${String(input.number)} 节` : "当前这一节" };
+      return {
+        label: "读原文",
+        arg: [input.part ? `第 ${String(input.part)} 篇` : "", input.number ? `第 ${String(input.number)} 页/节` : ""].filter(Boolean).join(" ") || "正在看的这一处",
+      };
     case "highlight":
       return { label: "划线", arg: String(input.quote ?? "") };
     case "show_in_reader":
-      return { label: "翻到", arg: String(input.quote ?? (input.number ? `第 ${String(input.number)} 节` : "")) };
+      return { label: "翻到", arg: String(input.quote ?? (input.number ? `第 ${String(input.number)} 页/节` : input.ref ? `引用 [${String(input.ref)}]` : "")) };
     case "TrustFolder":
       return { label: "文件夹里的配置", arg: tilde(input.dir), mono: true };
     case "Read":

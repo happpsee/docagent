@@ -7,7 +7,8 @@
 //! 只看名次、不看两路各自的分数，所以不用管 BM25 和向量距离的量纲对不上。
 
 use crate::db::{self, SearchHit};
-use crate::{embed, fts};
+use crate::spoiler::{Access, Live};
+use crate::{books, embed, fts};
 use anyhow::Result;
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -25,60 +26,44 @@ const MAX_DISTANCE: f64 = 1.26;
 /// 提问时等向量接口的时间上限：接口慢或挂了就只用全文那一路，不让用户干等
 const QUERY_TIMEOUT: Duration = Duration::from_secs(6);
 
-/// 防剧透的界线：这本书里，用户读到的位置之后的内容不拿出来
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Bound {
-    pub doc_id: String,
-    /// 读到第几页 / 第几节（PDF、EPUB）
-    pub page: Option<i64>,
-    /// 读到全书的几分之几（没有页码的格式用它）
-    pub fraction: f64,
-}
-
-impl Bound {
-    /// total：这本书一共多少个片段
-    fn allows(&self, hit: &SearchHit, total: i64) -> bool {
-        if hit.doc_id != self.doc_id {
-            return true;
-        }
-        match (hit.page, self.page) {
-            (Some(p), Some(limit)) => p <= limit,
-            _ => (hit.idx as f64) <= self.fraction * total as f64,
-        }
-    }
-}
-
+/// 检索。doc_ids 是用户限定的范围（None 或空是整个书架）；live 是阅读器此刻的位置，
+/// 开了防剧透的书按它和存下来的进度算出读到哪，没读到的不拿出来（规则见 spoiler.rs）。
+///
+/// 范围和界线都在两路各自的查询里面筛，所以每一路的名额、向量那一路「和最近的差多少」
+/// 的参照，算的都只是用户能看的片段。
 pub fn hybrid(
     conn: &Mutex<Connection>,
     query: &str,
     k: usize,
     doc_ids: Option<&[String]>,
+    live: Option<&Live>,
 ) -> Result<Vec<SearchHit>> {
-    hybrid_bounded(conn, query, k, doc_ids, None)
+    Ok(hybrid_noting(conn, query, k, doc_ids, live)?.0)
 }
 
-pub fn hybrid_bounded(
+/// 和 hybrid 一样，另外说明这次有没有因为防剧透少搜了内容（true = 有的篇只搜了读过的部分）
+pub fn hybrid_noting(
     conn: &Mutex<Connection>,
     query: &str,
     k: usize,
     doc_ids: Option<&[String]>,
-    bound: Option<&Bound>,
-) -> Result<Vec<SearchHit>> {
+    live: Option<&Live>,
+) -> Result<(Vec<SearchHit>, bool)> {
     let lock = || conn.lock().map_err(|_| anyhow::anyhow!("数据库锁异常"));
     let query = crate::parse::normalize(query);
-    let (text_hits, cfg) = {
+    let (text_hits, cfg, access) = {
         let conn = lock()?;
+        let access = Access::of(&conn, doc_ids, live)?;
         let cfg =
             embed::config(&conn).filter(|c| db::vectors_ready(&conn, &c.model).unwrap_or(false));
-        (fts::search(&conn, &query, POOL, doc_ids)?, cfg)
+        (fts::search(&conn, &query, POOL, &access)?, cfg, access)
     };
     // 调接口的这段时间不占数据库锁
     let vec_hits = match cfg {
         Some(cfg) => match embed::embed(&cfg, &[query.as_str()], QUERY_TIMEOUT) {
             Ok(v) => {
                 let conn = lock()?;
-                let mut hits = db::search_vec(&conn, &v[0], POOL, doc_ids)?;
+                let mut hits = db::search_vec(&conn, &v[0], POOL, &access)?;
                 let best = hits.first().map(|h| h.distance).unwrap_or(0.0);
                 hits.retain(|h| h.distance <= best + NEAR_BEST && h.distance <= MAX_DISTANCE);
                 hits
@@ -87,17 +72,18 @@ pub fn hybrid_bounded(
         },
         None => vec![],
     };
-    let (mut text_hits, mut vec_hits) = (text_hits, vec_hits);
-    if let Some(b) = bound {
-        let total: i64 = lock()?.query_row(
-            "SELECT COUNT(*) FROM chunks WHERE doc_id = ?1",
-            rusqlite::params![b.doc_id],
-            |r| r.get(0),
-        )?;
-        text_hits.retain(|h| b.allows(h, total));
-        vec_hits.retain(|h| b.allows(h, total));
+    let mut hits = fuse(text_hits, vec_hits, k);
+    if !hits.is_empty() {
+        // 出处的名字统一用显示名：多篇的书是「书名 · 篇名」，只有书名分不清是哪一篇
+        let labels = books::labels(&*lock()?)?;
+        for h in &mut hits {
+            if let Some(l) = labels.get(&h.doc_id) {
+                h.doc_title = l.display_title.clone();
+                h.book_id = l.book_id.clone();
+            }
+        }
     }
-    Ok(fuse(text_hits, vec_hits, k))
+    Ok((hits, access.bounded()))
 }
 
 fn fuse(text_hits: Vec<SearchHit>, vec_hits: Vec<SearchHit>, k: usize) -> Vec<SearchHit> {
@@ -192,21 +178,15 @@ fn fill(conn: &Mutex<Connection>, on_progress: &impl Fn(VectorProgress)) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::books::Scan;
     use crate::db::{NewDoc, TextChunk};
     use crate::embed::testing;
 
     // 补向量的任务是全局互斥的，这几个测试不能同时跑
     static SERIAL: Mutex<()> = Mutex::new(());
 
-    fn library() -> Mutex<Connection> {
-        let mut conn = db::open_in_memory().unwrap();
-        let texts = [
-            "第三条 付款条款：合同签订后 5 个工作日内支付 30% 预付款。",
-            "第四条 质保：质保期为验收合格之日起 24 个月，期内免费维修。",
-            "第五条 违约责任：乙方逾期交付的，每日按合同总价的 0.05% 支付违约金。",
-            "运输费用由乙方承担，保险由甲方自行办理。",
-        ];
-        let chunks: Vec<TextChunk> = texts
+    fn chunks(texts: &[&str]) -> Vec<TextChunk> {
+        texts
             .iter()
             .enumerate()
             .map(|(i, t)| TextChunk {
@@ -214,21 +194,38 @@ mod tests {
                 page: None,
                 text: t.to_string(),
             })
-            .collect();
-        db::import_document(
-            &mut conn,
-            &NewDoc {
-                title: "采购合同",
-                path: "/a.md",
-                kind: "md",
-                pages: None,
-                author: None,
-                cover: None,
-            },
-            &chunks,
-        )
-        .unwrap();
-        Mutex::new(conn)
+            .collect()
+    }
+
+    fn add(
+        conn: &Mutex<Connection>,
+        title: &str,
+        path: &str,
+        kind: &str,
+        texts: &[&str],
+    ) -> String {
+        let doc = NewDoc {
+            title,
+            path,
+            kind,
+            pages: None,
+            author: None,
+            cover: None,
+        };
+        db::import_document(&mut conn.lock().unwrap(), &doc, &chunks(texts)).unwrap()
+    }
+
+    const CONTRACT: [&str; 4] = [
+        "第三条 付款条款：合同签订后 5 个工作日内支付 30% 预付款。",
+        "第四条 质保：质保期为验收合格之日起 24 个月，期内免费维修。",
+        "第五条 违约责任：乙方逾期交付的，每日按合同总价的 0.05% 支付违约金。",
+        "运输费用由乙方承担，保险由甲方自行办理。",
+    ];
+
+    fn library() -> Mutex<Connection> {
+        let conn = Mutex::new(db::open_in_memory().unwrap());
+        add(&conn, "采购合同", "/a.md", "md", &CONTRACT);
+        conn
     }
 
     fn configure(conn: &Mutex<Connection>, cfg: &embed::EmbedConfig) {
@@ -238,27 +235,130 @@ mod tests {
         db::set_setting(&conn.lock().unwrap(), "settings", &json.to_string()).unwrap();
     }
 
+    fn live(doc_id: &str, fraction: f64) -> Live {
+        Live {
+            doc_id: doc_id.to_string(),
+            page: None,
+            fraction,
+        }
+    }
+
+    /// 一本三卷的连载小说（txt，防剧透默认开），返回三卷的 id
+    fn serial(conn: &Mutex<Connection>) -> Vec<String> {
+        books::create_book(
+            &conn.lock().unwrap(),
+            "槐花巷",
+            None,
+            Some("/n"),
+            Scan::None,
+        )
+        .unwrap();
+        [
+            (
+                "卷一.txt",
+                ["老陈在巷口开了一家照相馆。", "小满第一次来取照片。"],
+            ),
+            (
+                "卷二.txt",
+                ["照相馆的暗房里藏着一只信封。", "信封里是三十年前的底片。"],
+            ),
+            (
+                "卷三.txt",
+                ["底片上的人原来是小满的母亲。", "老陈最后把钥匙交给了小满。"],
+            ),
+        ]
+        .iter()
+        .map(|(name, texts)| add(conn, name, &format!("/n/{name}"), "txt", texts))
+        .collect()
+    }
+
     #[test]
     fn 防剧透_读到的位置之后的内容搜不出来() {
         let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let conn = library();
-        let doc_id = db::list_documents(&conn.lock().unwrap()).unwrap()[0]
-            .id
-            .clone();
-        let bound = |fraction: f64| Bound {
-            doc_id: doc_id.clone(),
-            page: None,
-            fraction,
-        };
+        let doc_id: String = conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT id FROM docs", [], |r| r.get(0))
+            .unwrap();
+        // 合同这类格式默认不开防剧透：读到哪都能搜全文
+        let hits = hybrid(&conn, "违约金", 3, None, Some(&live(&doc_id, 0.0))).unwrap();
+        assert!(hits[0].text.contains("违约金"));
+
+        let book = books::book_of(&conn.lock().unwrap(), &doc_id)
+            .unwrap()
+            .unwrap();
+        books::set_spoiler(&conn.lock().unwrap(), &book, Some(true)).unwrap();
         // 「违约金」在第三块（一共四块）。读到一半时搜不到，读到后面才有
-        let early = hybrid_bounded(&conn, "违约金", 3, None, Some(&bound(0.3))).unwrap();
+        let early = hybrid(&conn, "违约金", 3, None, Some(&live(&doc_id, 0.3))).unwrap();
         assert!(early.is_empty(), "{early:?}");
-        let later = hybrid_bounded(&conn, "违约金", 3, None, Some(&bound(0.6))).unwrap();
+        let later = hybrid(&conn, "违约金", 3, None, Some(&live(&doc_id, 0.6))).unwrap();
         assert!(later[0].text.contains("违约金"));
         // 前面读过的照常能搜到
-        assert!(!hybrid_bounded(&conn, "预付款", 3, None, Some(&bound(0.3)))
+        assert!(!hybrid(&conn, "预付款", 3, None, Some(&live(&doc_id, 0.3)))
             .unwrap()
             .is_empty());
+        // 存下来的最远处也算数：读到过后面，现在翻回前面，后面的还是能搜到
+        db::save_reading_state(&conn.lock().unwrap(), &doc_id, "loc", 0.7, None).unwrap();
+        let back = hybrid(&conn, "违约金", 3, None, Some(&live(&doc_id, 0.1))).unwrap();
+        assert!(back[0].text.contains("违约金"));
+        // 没开着书的时候提问（live 不给）：按存下来的进度算
+        let closed = hybrid(&conn, "运输费用", 3, None, None).unwrap();
+        assert!(closed.is_empty(), "{closed:?}");
+    }
+
+    #[test]
+    fn 多篇的书_前面的篇都能搜_读到的那篇到读过的地方_后面没打开过的搜不到() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = Mutex::new(db::open_in_memory().unwrap());
+        let v = serial(&conn);
+        // 还没开始读：整本都能搜（用户没在读它，只是拿来查）
+        let all = hybrid(&conn, "底片", 5, None, None).unwrap();
+        assert_eq!(all.len(), 2, "{all:?}");
+
+        // 读到卷二的开头
+        db::save_reading_state(&conn.lock().unwrap(), &v[1], "loc", 0.0, None).unwrap();
+        let found = |q: &str, live: Option<&Live>| -> Vec<String> {
+            hybrid(&conn, q, 5, None, live)
+                .unwrap()
+                .into_iter()
+                .map(|h| h.text)
+                .collect()
+        };
+        // 卷一没打开过也算读过（排在读到的那篇前面）
+        assert_eq!(found("取照片", None), vec!["小满第一次来取照片。"]);
+        // 卷二只到读过的地方：第一块能搜到，第二块（底片）还没读到
+        assert_eq!(found("信封", None), vec!["照相馆的暗房里藏着一只信封。"]);
+        // 卷三没打开过：一条都不给，哪怕只在卷三里找
+        assert!(found("底片", None).is_empty());
+        assert!(hybrid(&conn, "小满的母亲", 5, Some(&v[2..]), None)
+            .unwrap()
+            .is_empty());
+
+        // 命中带着书、格式和显示用的名字
+        let hit = &hybrid(&conn, "信封", 5, None, None).unwrap()[0];
+        assert_eq!(hit.doc_title, "槐花巷 · 卷二");
+        assert_eq!(hit.doc_kind, "txt");
+        assert_eq!(
+            Some(hit.book_id.clone()),
+            books::book_of(&conn.lock().unwrap(), &v[1]).unwrap()
+        );
+        assert_eq!(hit.doc_id, v[1]);
+
+        // 阅读器此刻翻到了卷二的后半：不用等进度存盘
+        assert_eq!(found("底片", Some(&live(&v[1], 0.5))).len(), 1);
+        // 正开着卷三的开头：卷二整篇算读过，卷三到第一块
+        let at_three = live(&v[2], 0.0);
+        let texts = found("底片", Some(&at_three));
+        assert_eq!(texts.len(), 2, "{texts:?}");
+        assert!(found("钥匙", Some(&at_three)).is_empty());
+
+        // 关掉这本书的防剧透：不设限
+        let book = books::book_of(&conn.lock().unwrap(), &v[0])
+            .unwrap()
+            .unwrap();
+        books::set_spoiler(&conn.lock().unwrap(), &book, Some(false)).unwrap();
+        assert_eq!(found("钥匙", None).len(), 1);
     }
 
     #[test]
@@ -266,11 +366,11 @@ mod tests {
         let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let conn = library();
         fill_vectors(&conn, |_| panic!("没配接口不该有进度"));
-        let hits = hybrid(&conn, "质保期多久", 3, None).unwrap();
+        let hits = hybrid(&conn, "质保期多久", 3, None, None).unwrap();
         assert!(hits[0].text.contains("质保期"));
         assert_eq!(hits[0].via, "fts");
         // 换了说法，字面对不上：只靠全文是找不到的
-        assert!(hybrid(&conn, "迟交货要罚多少钱", 3, None)
+        assert!(hybrid(&conn, "迟交货要罚多少钱", 3, None, None)
             .unwrap()
             .iter()
             .all(|h| !h.text.contains("违约金")));
@@ -289,19 +389,87 @@ mod tests {
         assert!(p.error.is_none());
 
         // 原文写的是「逾期交付……支付违约金」，问法里一个相同的词都没有
-        let hits = hybrid(&conn, "迟交货要罚多少钱", 3, None).unwrap();
+        let hits = hybrid(&conn, "迟交货要罚多少钱", 3, None, None).unwrap();
         assert!(hits[0].text.contains("违约金"), "{hits:?}");
         assert_eq!(hits[0].via, "vec");
 
         // 字面和意思都对得上的，标成两路都命中，排第一
-        let hits = hybrid(&conn, "质保期多久", 3, None).unwrap();
+        let hits = hybrid(&conn, "质保期多久", 3, None, None).unwrap();
         assert!(hits[0].text.contains("质保期"));
         assert_eq!(hits[0].via, "both");
 
         // 完全无关的问题：两路都不该硬凑结果
-        assert!(hybrid(&conn, "讲讲唐朝的科举制度", 3, None)
+        assert!(hybrid(&conn, "讲讲唐朝的科举制度", 3, None, None)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn 向量这一路_范围和界线也在查询里筛_近的都在别的书里也找得到() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = library();
+        let contract: String = conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT id FROM docs", [], |r| r.get(0))
+            .unwrap();
+        // 另一本书里有两百多块，句句都和问法几乎一样——全库最近的那些全是它的
+        let noise: Vec<String> = (0..210)
+            .map(|i| format!("迟交货要罚多少钱？第 {i} 种说法。"))
+            .collect();
+        let noise: Vec<&str> = noise.iter().map(String::as_str).collect();
+        let faq = add(&conn, "问答集", "/faq.md", "md", &noise);
+        let fake = testing::serve(None);
+        configure(&conn, &fake.cfg);
+        fill_vectors(&conn, |_| {});
+        assert_eq!(
+            db::vector_counts(&conn.lock().unwrap()).unwrap(),
+            (214, 214)
+        );
+
+        // 不限范围：前几名都是问答集里的；合同里讲违约金的那一块排在两百一十名开外
+        let hits = hybrid(&conn, "迟交货要罚多少钱", 3, None, None).unwrap();
+        assert!(hits.iter().all(|h| h.doc_id == faq), "{hits:?}");
+        let v = embed::embed(&fake.cfg, &["迟交货要罚多少钱"], QUERY_TIMEOUT).unwrap();
+        let nearest = db::search_vec(&conn.lock().unwrap(), &v[0], 214, &Access::all()).unwrap();
+        let rank = nearest.iter().position(|h| h.text.contains("违约金"));
+        assert!(rank.is_some_and(|r| r >= 210), "{rank:?}");
+        // 只在合同里找：字面对不上，全靠向量；合同那一条在全库里排在两百名开外，照样找得到。
+        // 「和最近的差多少」也是在合同里比的，不会因为问答集里有更近的就被筛掉
+        let scope = [contract.clone()];
+        let hits = hybrid(&conn, "迟交货要罚多少钱", 3, Some(&scope), None).unwrap();
+        assert!(!hits.is_empty());
+        assert!(hits[0].text.contains("违约金"), "{hits:?}");
+        assert_eq!(hits[0].via, "vec");
+        assert!(hits.iter().all(|h| h.doc_id == contract));
+
+        // 界线同理：合同开了防剧透、只读到前一半，「违约金」那一块（第三块）还没读到，
+        // 向量这一路也不能把它拿出来
+        let book = books::book_of(&conn.lock().unwrap(), &contract)
+            .unwrap()
+            .unwrap();
+        books::set_spoiler(&conn.lock().unwrap(), &book, Some(true)).unwrap();
+        let early = hybrid(
+            &conn,
+            "迟交货要罚多少钱",
+            3,
+            Some(&scope),
+            Some(&live(&contract, 0.3)),
+        )
+        .unwrap();
+        assert!(
+            early.iter().all(|h| !h.text.contains("违约金")),
+            "{early:?}"
+        );
+        let later = hybrid(
+            &conn,
+            "迟交货要罚多少钱",
+            3,
+            Some(&scope),
+            Some(&live(&contract, 0.6)),
+        )
+        .unwrap();
+        assert!(later[0].text.contains("违约金"), "{later:?}");
     }
 
     #[test]
@@ -341,7 +509,7 @@ mod tests {
         fill_vectors(&conn, |p| *last.lock().unwrap() = Some(p));
         let p = last.into_inner().unwrap().unwrap();
         assert!(p.error.unwrap().contains("500"));
-        assert!(hybrid(&conn, "质保期多久", 3, None).unwrap()[0]
+        assert!(hybrid(&conn, "质保期多久", 3, None, None).unwrap()[0]
             .text
             .contains("质保期"));
     }

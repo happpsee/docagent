@@ -19,6 +19,7 @@ import * as api from "@/lib/api";
 import {
   DEFAULT_READER_PREFS,
   type Annotation,
+  type Book,
   type Doc,
   type HighlightColor,
   type HighlightStyle,
@@ -32,6 +33,7 @@ import { BookmarksPanel, NotesPanel, SearchPanel, TocPanel, type SearchGroup } f
 import { SelectionPopup, type PopupState } from "./SelectionPopup";
 import { PrefsPopover } from "./PrefsPopover";
 import { notesMarkdown } from "./export";
+import { readBoundaries } from "@/lib/scope";
 import { figuresOf, lookup, useXRay, visibleUnits, XRayPanel } from "./XRay";
 
 export type SelectionAction = "ask" | "explain" | "related";
@@ -44,12 +46,19 @@ export interface ReadTarget {
   quote?: string;
   /** 直接给出书内位置（从笔记跳过来） */
   cfi?: string;
+  /** 翻到这一篇的几分之几处（从透视的要点跳过来，那一篇没有页码时用） */
+  fraction?: number;
   /** 同一位置重复点击时也要重新定位，用它触发 */
   nonce: number;
 }
 
 interface Props {
+  /** 正在读的书，和现在开着的是它的哪一篇。引擎一次只开一篇（一个文件） */
+  book: Book;
   doc: Doc;
+  /** 左边开着哪个面板。由上层保管：换一篇会重建阅读器，面板不该跟着关掉 */
+  panel: Panel | null;
+  onPanel: (p: Panel | null) => void;
   target: ReadTarget;
   /** 外面改了笔记（比如把助手的回答存成笔记）时加一，阅读器重新读一遍 */
   notesVersion: number;
@@ -61,10 +70,16 @@ interface Props {
   onClose: () => void;
   /** 用户对选中的文字发起操作 */
   onSelection: (action: SelectionAction, text: string, page: number | null, cfi: string) => void;
-  /** 就这本书向助手提一个问题（一键动作、整理笔记等） */
-  onAsk: (prompt: string) => void;
+  /** 就这本书向助手提一个问题（一键动作、整理笔记等）。title：为它新开对话时用的标题 */
+  onAsk: (prompt: string, title?: string) => void;
+  /** 翻到这本书的另一篇（可以带着要去的位置） */
+  onOpenPart: (docId: string, at?: Partial<Omit<ReadTarget, "docId" | "nonce">>) => void;
+  /** 打开这本书的详情（封面、书名、各篇、移除） */
+  onInfo: () => void;
+  /** 改这本书的防剧透开关 */
+  onSpoiler: (on: boolean) => void;
   /** 进度、封面变了，书架要刷新 */
-  onDocsChanged: () => void;
+  onBooksChanged: () => void;
   onError: (message: string) => void;
 }
 
@@ -79,7 +94,7 @@ interface Loc {
   location?: { current: number; next: number; total: number };
 }
 
-type Panel = "toc" | "xray" | "notes" | "bookmarks" | "search";
+export type Panel = "toc" | "xray" | "notes" | "bookmarks" | "search";
 
 /** 一键动作：不用想怎么问，点一下就把这句话连同当前位置交给助手 */
 const QUICK: { name: string; prompt: string }[] = [
@@ -95,7 +110,10 @@ const SEARCH_CAP = 500;
 
 /** 阅读器：所有格式都走同一个排版引擎，所以目录、搜索、高亮、笔记、书签、进度记忆对每种格式都一样。 */
 export function Reader({
+  book,
   doc,
+  panel,
+  onPanel: setPanel,
   target,
   notesVersion,
   command,
@@ -104,7 +122,10 @@ export function Reader({
   onClose,
   onSelection,
   onAsk,
-  onDocsChanged,
+  onOpenPart,
+  onInfo,
+  onSpoiler,
+  onBooksChanged,
   onError,
 }: Props) {
   const host = useRef<HTMLDivElement>(null);
@@ -115,7 +136,6 @@ export function Reader({
   const [loc, setLoc] = useState<Loc | null>(null);
   const [toc, setToc] = useState<api.TocItem[]>([]);
   const [fixed, setFixed] = useState(false);
-  const [panel, setPanel] = useState<Panel | null>(null);
   const [showPrefs, setShowPrefs] = useState(false);
   const [prefs, setPrefs] = useState<ReaderPrefs>(DEFAULT_READER_PREFS);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
@@ -134,8 +154,20 @@ export function Reader({
   const sectionOf = useRef(new Map<string, number>());
   const footnoteView = useRef<FoliateView | null>(null);
   const [showQuick, setShowQuick] = useState(false);
-  const { xray, building, build, rebuild } = useXRay(doc.id, onError);
-  const lastInfo = useRef<ReadingInfo | null>(null);
+  const { xray, building, build, rebuild } = useXRay(book.id, onError);
+  /** 这本书别的篇上的标记：只给笔记、书签面板列出来用。
+   *  画到书页上、判断「这一屏有没有书签」只看当前这一篇的——不同篇的位置编码长得一样，混在一起会画错地方 */
+  const [others, setOthers] = useState<Annotation[]>([]);
+  const lastPage = useRef<number | null>(null);
+  const multi = book.docs.length > 1;
+  // 上一篇 / 下一篇跳过原文件找不到的（目录里它们也是灰的）
+  const prevPart = [...book.docs].reverse().find((d) => !d.missing && d.position < doc.position) ?? null;
+  const nextPart = book.docs.find((d) => !d.missing && d.position > doc.position) ?? null;
+  /** 这一篇读到过的最远处（位置和页码）。书架那份数据是打开时取的，读的过程中不会更新，
+   *  所以在这儿自己记：往回翻的时候，防剧透不能把这次刚读过的部分又藏起来 */
+  const [seen, setSeen] = useState<{ fraction: number; page: number | null }>({ fraction: doc.furthest, page: doc.furthestPage });
+  const seenRef = useRef(seen);
+  seenRef.current = seen;
   const onLocationRef = useRef(onLocation);
   onLocationRef.current = onLocation;
   const searchRun = useRef(0);
@@ -195,6 +227,7 @@ export function Reader({
     }
     if (!t.quote) {
       if (t.page) await view.goTo(t.page - 1);
+      else if (t.fraction != null) await view.goToFraction(t.fraction);
       return;
     }
     const cfi = await locateQuote(view, t.quote, t.page);
@@ -202,6 +235,7 @@ export function Reader({
     citeRef.current = cfi;
     if (!cfi) {
       if (t.page) await view.goTo(t.page - 1);
+      else if (t.fraction != null) await view.goToFraction(t.fraction);
       return;
     }
     await view.goTo(cfi);
@@ -228,14 +262,30 @@ export function Reader({
         const [, saved, notes, rawPrefs] = await Promise.all([
           loadEngine(),
           api.readingState(doc.id).catch(() => null),
-          api.listAnnotations(doc.id).catch(() => []),
+          api.listAnnotations({ docId: doc.id }).catch(() => []),
           api.getSetting(PREFS_KEY).catch(() => null),
         ]);
         const p = { ...DEFAULT_READER_PREFS, ...(rawPrefs ? (JSON.parse(rawPrefs) as Partial<ReaderPrefs>) : {}) };
         if (p.spread !== "both") p.spread = "none";
         const source = await openSource(doc, p);
         opened = source as { destroy?: () => void };
-        if (dead || !stage.current) return;
+        if (dead || !stage.current) {
+          // 还没打开完就被关掉 / 换篇了：清理函数那时拿不到它，在这儿释放（PDF 的后台线程和整份文件的字节）
+          if (dead) {
+            try {
+              opened.destroy?.();
+            } catch {
+              // 收尾出错不影响
+            }
+            opened = null;
+          }
+          return;
+        }
+        if (saved) {
+          const far = { fraction: Math.max(doc.furthest, saved.furthest ?? saved.fraction ?? 0), page: saved.furthestPage ?? doc.furthestPage };
+          setSeen(far);
+          seenRef.current = far;
+        }
         setPrefs(p);
         prefsRef.current = p;
         setAnnotations(notes);
@@ -253,27 +303,32 @@ export function Reader({
         applyPrefs(v, p);
 
         v.addEventListener("relocate", (e) => {
-          const l = (e as CustomEvent<Loc>).detail;
+          const raw = (e as CustomEvent<Loc>).detail;
+          // 滚动模式下引擎报的是视口顶端的位置，滚到底也到不了 100%：
+          // 「下一篇」的提示、读完的标记、下次从哪一篇接着读都等着这个 100%，所以到底了就算读完
+          const r = v.renderer as unknown as { scrolled?: boolean; atEnd?: boolean };
+          const l: Loc = !v.isFixedLayout && r.scrolled && r.atEnd ? { ...raw, fraction: 1 } : raw;
           setLoc(l);
           setCanGoBack(!!v.history?.canGoBack);
           // 翻页了，浮在原位置上的菜单和脚注就不对了
           setPopup(null);
           setFootnote(null);
-          const info: ReadingInfo = {
-            docId: doc.id,
-            docTitle: doc.title,
-            // 索引里 PDF 按页、EPUB 按节记了位置；其它格式没有
-            page: (v.isFixedLayout || doc.kind === "epub") && l.section ? l.section.current + 1 : null,
-            chapter: l.tocItem?.label?.trim() ?? "",
-            fraction: l.fraction ?? 0,
-            spoilerFree: prefsRef.current.spoilerFree,
-          };
-          lastInfo.current = info;
+          // 索引里 PDF 按页、EPUB 按节记了位置；其它格式没有
+          const page = (v.isFixedLayout || doc.kind === "epub") && l.section ? l.section.current + 1 : null;
+          lastPage.current = page;
+          // 往前读到了新的地方才更新「最远处」；页码只在往前的时候记（往回翻到的那一页不是最远的）
+          const frac = l.fraction ?? 0;
+          if (frac >= seenRef.current.fraction) {
+            const far = { fraction: frac, page: page != null ? Math.max(page, seenRef.current.page ?? 0) : seenRef.current.page };
+            seenRef.current = far;
+            setSeen(far);
+          }
+          const info: ReadingInfo = { docId: doc.id, page, chapter: l.tocItem?.label?.trim() ?? "", fraction: l.fraction ?? 0 };
           onLocationRef.current(info);
           // 进度别每翻一页都写库，停下来再写
           clearTimeout(saveTimer);
           saveTimer = window.setTimeout(() => {
-            void api.saveReadingState(doc.id, l.cfi, l.fraction ?? 0).catch(() => {});
+            void api.saveReadingState(doc.id, l.cfi, l.fraction ?? 0, page).catch(() => {});
           }, 600);
         });
 
@@ -399,17 +454,17 @@ export function Reader({
         else await v.goTo(0);
         // 打开的这段时间里用户可能又点了别的引用，以最新的为准
         const t = targetRef.current;
-        if (t.quote || t.page || t.cfi) await showCitation(v, t);
+        if (t.quote || t.page || t.cfi || t.fraction != null) await showCitation(v, t);
         if (dead) return;
         setReady(true);
 
         // 没有封面的（PDF 等）：拿第一页当封面存起来
-        if (!doc.hasCover && typeof v.book.getCover === "function") {
+        if (!doc.hasCover && !doc.missing && typeof v.book.getCover === "function") {
           void (async () => {
             const blob = (await v.book.getCover()) as Blob | null;
             if (!blob) return;
             await api.setDocCover(doc.id, new Uint8Array(await blob.arrayBuffer()));
-            onDocsChanged();
+            onBooksChanged();
           })().catch(() => {});
         }
       } catch (err) {
@@ -449,7 +504,7 @@ export function Reader({
       clearTimeout(saveTimer);
       window.removeEventListener("keydown", onKey);
       const l = locRef.current;
-      if (l?.cfi) void api.saveReadingState(doc.id, l.cfi, l.fraction ?? 0).then(onDocsChanged, () => {});
+      if (l?.cfi) void api.saveReadingState(doc.id, l.cfi, l.fraction ?? 0, lastPage.current).then(onBooksChanged, () => {});
       try {
         footnoteView.current?.close();
         view?.close();
@@ -477,7 +532,7 @@ export function Reader({
   // 外面改了笔记：重新读一遍并重画
   useEffect(() => {
     if (!notesVersion) return;
-    void api.listAnnotations(doc.id).then((list) => {
+    void api.listAnnotations({ docId: doc.id }).then((list) => {
       for (const a of annRef.current) erase(a);
       sectionOf.current.clear();
       annRef.current = list;
@@ -486,16 +541,25 @@ export function Reader({
     });
   }, [notesVersion, doc.id, draw, erase]);
 
+  // 这本书别的篇上的标记（多篇的书才需要），给面板列出来
+  useEffect(() => {
+    if (!multi) return setOthers([]);
+    let dead = false;
+    void api.listAnnotations({ bookId: book.id }).then(
+      (list) => {
+        if (!dead) setOthers(list.filter((a) => a.docId !== doc.id));
+      },
+      () => {},
+    );
+    return () => {
+      dead = true;
+    };
+  }, [multi, book.id, doc.id, notesVersion]);
+
   function updatePrefs(patch: Partial<ReaderPrefs>) {
     const next = { ...prefs, ...patch };
     setPrefs(next);
-    // 只改了防剧透开关的话不用重新排版
-    const layoutChanged = Object.keys(patch).some((k) => k !== "spoilerFree");
-    if (viewRef.current && layoutChanged) applyPrefs(viewRef.current, next);
-    if (lastInfo.current) {
-      lastInfo.current = { ...lastInfo.current, spoilerFree: next.spoilerFree };
-      onLocation(lastInfo.current);
-    }
+    if (viewRef.current) applyPrefs(viewRef.current, next);
     void api.setSetting(PREFS_KEY, JSON.stringify(next)).catch(() => {});
   }
 
@@ -663,8 +727,8 @@ export function Reader({
   const goTo = (t: string | number) => void viewRef.current?.goTo(t)?.catch((err: unknown) => onError(String(err)));
 
   async function exportNotes() {
-    const md = notesMarkdown(doc, highlights);
-    const name = `${doc.title.replace(/\.[^.]+$/, "")}-笔记.md`;
+    const md = notesMarkdown(book, allHighlights, partName);
+    const name = `${book.title}-笔记.md`;
     try {
       if (api.isPreview) {
         const a = document.createElement("a");
@@ -680,6 +744,12 @@ export function Reader({
   }
 
   // ---------- 助手交代的事 ----------
+
+  // 这一篇打不开（原文件没了、文件坏了）：助手还等着回话，告诉它，别让它干等到超时
+  useEffect(() => {
+    if (failed && command) onCommandDone(command.callId, false, `这一篇打不开：${doc.missing ? "原文件找不到了" : failed}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [failed, command?.callId]);
 
   useEffect(() => {
     const v = viewRef.current;
@@ -738,10 +808,53 @@ export function Reader({
   }
 
   /** 透视里读过的部分出现的人物和概念：选中名字时直接告诉用户是谁 */
-  const figures = useMemo(
-    () => figuresOf(visibleUnits(xray, loc?.fraction ?? 0, prefs.spoilerFree)),
-    [xray, loc?.fraction, prefs.spoilerFree],
+  /** 防剧透时每一篇能看到哪儿；正在读的这一篇按当前位置算 */
+  const bounds = useMemo(
+    () => readBoundaries(book, { docId: doc.id, fraction: seen.fraction, page: seen.page }),
+    [book, doc.id, seen],
   );
+  /** 此刻在第几页 / 第几节（没有页码的格式是 null） */
+  const livePage = (fixed || doc.kind === "epub") && loc?.section ? loc.section.current + 1 : null;
+  const figures = useMemo(() => figuresOf(visibleUnits(xray, bounds)), [xray, bounds]);
+
+  /** 面板里列的标记：整本书的，按篇的先后排；当前这一篇的用最新的本地状态 */
+  const partOf = useMemo(() => new Map(book.docs.map((d) => [d.id, d])), [book.docs]);
+  const byPart = useCallback(
+    (list: Annotation[]) =>
+      [...list].sort((a, b) => {
+        const pa = partOf.get(a.docId)?.position ?? 0;
+        const pb = partOf.get(b.docId)?.position ?? 0;
+        if (pa !== pb) return pa - pb;
+        try {
+          return CFI.compare(a.cfi, b.cfi);
+        } catch {
+          return a.createdAt - b.createdAt;
+        }
+      }),
+    [partOf],
+  );
+  const allHighlights = useMemo(
+    () => byPart([...highlights, ...others.filter((a) => a.kind === "highlight")]),
+    [byPart, highlights, others],
+  );
+  const allBookmarks = useMemo(
+    () => byPart([...bookmarks, ...others.filter((a) => a.kind === "bookmark")]),
+    [byPart, bookmarks, others],
+  );
+  /** 面板里改 / 删一条标记。别的篇上的不经过引擎（它没开着那一篇），直接改库 */
+  async function saveAny(a: Annotation) {
+    if (a.docId === doc.id) return saveAnnotation(a);
+    setOthers((list) => list.map((x) => (x.id === a.id ? a : x)));
+    await api.saveAnnotation(a).catch((err) => onError(String(err)));
+  }
+  async function removeAny(a: Annotation) {
+    if (a.docId === doc.id) return removeAnnotation(a);
+    setOthers((list) => list.filter((x) => x.id !== a.id));
+    await api.deleteAnnotation(a.id).catch((err) => onError(String(err)));
+  }
+  /** 点面板里的一条标记：在别的篇上就先翻过去 */
+  const goAnnotation = (a: Annotation) => (a.docId === doc.id ? goTo(a.cfi) : onOpenPart(a.docId, { cfi: a.cfi }));
+  const partName = (docId: string) => (multi ? (partOf.get(docId)?.name ?? "") : "");
 
   const percent = drag != null ? Math.round(drag / 10) : loc ? Math.round((loc.fraction ?? 0) * 100) : 0;
   const where = fixed
@@ -754,7 +867,7 @@ export function Reader({
     `focus-ring grid h-7 w-7 place-items-center rounded-md transition-colors ${
       active ? "bg-accent-soft text-accent" : "text-text-3 hover:bg-nav-card hover:text-text"
     }`;
-  const togglePanel = (p: Panel) => setPanel((cur) => (cur === p ? null : p));
+  const togglePanel = (p: Panel) => setPanel(panel === p ? null : p);
 
   return (
     <section
@@ -783,10 +896,14 @@ export function Reader({
         <button className={tool(panel === "search")} title="书内搜索" aria-label="书内搜索" onClick={() => togglePanel("search")}>
           <Search className="h-4 w-4" />
         </button>
-        <div className="min-w-0 flex-1 truncate px-2 text-center text-[13px] text-text-2">
-          {doc.title}
-          {doc.author ? <span className="ml-2 text-text-4">{doc.author}</span> : null}
-        </div>
+        <button
+          className="min-w-0 flex-1 truncate rounded-md px-2 py-0.5 text-center text-[13px] text-text-2 hover:bg-nav-card hover:text-text"
+          title="这本书的详情：封面、书名、各篇、对话"
+          onClick={onInfo}
+        >
+          {book.title}
+          {multi ? <span className="ml-2 text-text-4">{doc.name}</span> : book.author ? <span className="ml-2 text-text-4">{book.author}</span> : null}
+        </button>
         <button
           data-floating-toggle
           className={tool(showQuick)}
@@ -828,8 +945,8 @@ export function Reader({
                 [
                   ["toc", "目录"],
                   ["xray", "透视"],
-                  ["notes", `笔记${highlights.length ? ` ${highlights.length}` : ""}`],
-                  ["bookmarks", `书签${bookmarks.length ? ` ${bookmarks.length}` : ""}`],
+                  ["notes", `笔记${allHighlights.length ? ` ${allHighlights.length}` : ""}`],
+                  ["bookmarks", `书签${allBookmarks.length ? ` ${allBookmarks.length}` : ""}`],
                   ["search", "搜索"],
                 ] as [Panel, string][]
               ).map(([id, name]) => (
@@ -843,46 +960,74 @@ export function Reader({
               ))}
             </nav>
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {panel === "toc" && <TocPanel toc={toc} current={loc?.tocItem?.href ?? null} onGo={goTo} fixed={fixed} total={loc?.section?.total ?? doc.pages ?? 0} page={loc?.section?.current ?? 0} />}
+              {panel === "toc" && (
+                <TocPanel
+                  toc={toc}
+                  current={loc?.tocItem?.href ?? null}
+                  onGo={goTo}
+                  fixed={fixed}
+                  total={loc?.section?.total ?? doc.pages ?? 0}
+                  page={loc?.section?.current ?? 0}
+                  parts={multi ? book.docs : null}
+                  currentPart={doc.id}
+                  onPart={(d) => onOpenPart(d.id)}
+                />
+              )}
               {panel === "xray" && (
                 <XRayPanel
                   xray={xray}
                   building={building}
+                  book={book}
+                  currentDoc={doc.id}
                   fraction={loc?.fraction ?? 0}
-                  spoilerFree={prefs.spoilerFree}
-                  onToggleSpoiler={() => updatePrefs({ spoilerFree: !prefs.spoilerFree })}
+                  page={livePage}
+                  bounds={bounds}
+                  onToggleSpoiler={() => onSpoiler(!book.spoilerFree)}
                   onBuild={() => void build()}
                   onRebuild={() => void rebuild()}
                   onGoUnit={(u) => {
+                    // 别的篇上的要点：先翻到那一篇
+                    if (u.docId !== doc.id) return onOpenPart(u.docId, u.page ? { page: u.page } : { fraction: u.start });
                     const v = viewRef.current;
                     if (!v) return;
                     void (u.page ? v.goTo(u.page - 1) : v.goToFraction(u.start)).catch((err: unknown) => onError(String(err)));
                   }}
                   onGoQuote={(quote, u) => {
+                    // 带上这一段的位置：引文对不上原文（模型没照抄）时，至少翻到这一段
+                    if (u.docId !== doc.id) return onOpenPart(u.docId, { quote, page: u.page, fraction: u.start });
                     const v = viewRef.current;
-                    if (v) void showCitation(v, { docId: doc.id, quote, page: u.page, nonce: Date.now() }).catch((err) => onError(String(err)));
+                    if (v) {
+                      void showCitation(v, { docId: doc.id, quote, page: u.page, fraction: u.start, nonce: Date.now() }).catch((err) =>
+                        onError(String(err)),
+                      );
+                    }
                   }}
                   onAskAbout={(name) =>
-                    onAsk(`讲讲「${name}」到我读到的位置为止的来龙去脉：出现在哪些地方、做了什么、和别人是什么关系。不要提我还没读到的内容。`)
+                    onAsk(
+                      `讲讲「${name}」到我读到的位置为止的来龙去脉：出现在哪些地方、做了什么、和别人是什么关系。不要提我还没读到的内容。`,
+                      `「${name}」的来龙去脉`,
+                    )
                   }
                 />
               )}
               {panel === "notes" && (
                 <NotesPanel
-                  notes={highlights}
-                  onGo={(a) => goTo(a.cfi)}
-                  onSave={(a) => void saveAnnotation(a)}
-                  onDelete={(a) => void removeAnnotation(a)}
+                  notes={allHighlights}
+                  partName={partName}
+                  onGo={goAnnotation}
+                  onSave={(a) => void saveAny(a)}
+                  onDelete={(a) => void removeAny(a)}
                   onExport={() => void exportNotes()}
                   onAsk={() =>
                     onAsk(
-                      `读一下我在《${doc.title}》里划的重点和写的笔记（用 list_notes 工具），帮我整理：按主题归类、提炼要点，再指出几处我可能没注意到的关联。`,
+                      `读一下我在《${book.title}》里划的重点和写的笔记（用 list_notes 工具），帮我整理：按主题归类、提炼要点，再指出几处我可能没注意到的关联。`,
+                      "整理我的笔记",
                     )
                   }
                 />
               )}
               {panel === "bookmarks" && (
-                <BookmarksPanel bookmarks={bookmarks} onGo={(a) => goTo(a.cfi)} onDelete={(a) => void removeAnnotation(a)} />
+                <BookmarksPanel bookmarks={allBookmarks} partName={partName} onGo={goAnnotation} onDelete={(a) => void removeAny(a)} />
               )}
               {panel === "search" && (
                 <SearchPanel
@@ -906,7 +1051,16 @@ export function Reader({
             <p className="arc-shimmer-text pointer-events-none absolute inset-x-0 top-10 text-center text-[13px]">正在打开…</p>
           )}
           {failed && (
-            <p className="absolute inset-x-0 top-10 px-8 text-center text-[13px] text-danger">打不开这份文档：{failed}</p>
+            <p className="absolute inset-x-0 top-10 px-8 text-center text-[13px] text-danger">打不开{multi ? "这一篇" : "这本书"}：{doc.missing ? "原文件找不到了（可以在书的详情里重新指定位置）" : failed}</p>
+          )}
+          {/* 一篇读到头了：直接给出下一篇 */}
+          {ready && nextPart && (loc?.fraction ?? 0) >= 0.995 && (
+            <button
+              className="absolute bottom-5 left-1/2 z-10 -translate-x-1/2 rounded-full border border-hairline-strong bg-surface-2 px-4 py-1.5 text-[13px] text-text shadow-[0_6px_20px_-8px_rgb(0_0_0/0.3)] hover:border-accent hover:text-accent"
+              onClick={() => onOpenPart(nextPart.id)}
+            >
+              下一篇：{nextPart.name} →
+            </button>
           )}
           {/* 两侧的翻页热区 */}
           {ready && (fixed ? prefs.spread === "both" : prefs.flow === "paginated") && (
@@ -944,7 +1098,32 @@ export function Reader({
             返回
           </button>
         )}
-        <span className="min-w-0 max-w-[45%] truncate">{where}</span>
+        {multi && (
+          <span className="flex shrink-0 items-center gap-0.5">
+            <button
+              className="grid h-5 w-5 place-items-center rounded hover:bg-nav-card hover:text-text disabled:opacity-30"
+              aria-label="上一篇"
+              title={prevPart ? `上一篇：${prevPart.name}` : "已经是第一篇"}
+              disabled={!prevPart}
+              onClick={() => prevPart && onOpenPart(prevPart.id)}
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+            <span className="num">
+              第 {doc.position + 1}/{book.docs.length} 篇
+            </span>
+            <button
+              className="grid h-5 w-5 place-items-center rounded hover:bg-nav-card hover:text-text disabled:opacity-30"
+              aria-label="下一篇"
+              title={nextPart ? `下一篇：${nextPart.name}` : "已经是最后一篇"}
+              disabled={!nextPart}
+              onClick={() => nextPart && onOpenPart(nextPart.id)}
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </span>
+        )}
+        <span className="min-w-0 max-w-[40%] truncate">{where}</span>
         <input
           type="range"
           min={0}
@@ -973,7 +1152,8 @@ export function Reader({
               className="block w-full rounded-lg px-2.5 py-1.5 text-left text-[13px] text-text-2 hover:bg-nav-card hover:text-text"
               onClick={() => {
                 setShowQuick(false);
-                onAsk(q.prompt);
+                // 标题带上章节名：同一本书问了几次「总结这一章」，历史里才分得清
+                onAsk(q.prompt, [q.name, loc?.tocItem?.label?.trim() || (multi ? doc.name : "")].filter(Boolean).join(" · "));
               }}
             >
               {q.name}

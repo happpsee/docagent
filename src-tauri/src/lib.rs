@@ -1,25 +1,30 @@
 //! DocAgent：本地文档智能体工作台。
 //!
 //! 进程划分：
-//! - Rust（这里）：SQLite 存储（文档、向量索引、会话）、文件读写、管理 sidecar
+//! - Rust（这里）：SQLite 存储（书、文档、向量索引、会话）、文件读写、管理 sidecar
 //! - sidecar（bun 单文件，内含 Claude Agent SDK）：agent 循环、工具调用、会话续接
 //! - WebView：界面
 //!
 //! sidecar 的工具通过只绑本机的 HTTP 接口调回 Rust 做检索和保存。
 
 pub mod agent;
+pub mod books;
 pub mod chunk;
 pub mod commands;
 pub mod db;
 pub mod ebook;
 pub mod embed;
 pub mod fts;
+pub mod import;
 pub mod llm;
 pub mod markup;
+pub mod migrate;
+pub mod natural;
 pub mod parse;
 pub mod render;
 pub mod search;
 pub mod server;
+pub mod spoiler;
 pub mod xray;
 
 use std::path::PathBuf;
@@ -66,10 +71,20 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::import_paths,
-            commands::document_text,
-            commands::list_documents,
+            commands::list_books,
+            commands::update_book,
+            commands::set_book_spoiler,
+            commands::delete_book,
             commands::delete_document,
+            commands::move_part,
+            commands::split_book,
+            commands::scan_paths,
+            commands::import_paths,
+            commands::rescan_book,
+            commands::relocate_book,
+            commands::reveal_book,
+            commands::reveal_doc,
+            commands::document_text,
             commands::reset_index,
             commands::fill_vectors,
             commands::xray_get,
@@ -77,7 +92,9 @@ pub fn run() {
             commands::xray_clear,
             commands::read_file_bytes,
             commands::document_book,
-            commands::doc_cover,
+            commands::book_cover,
+            commands::pick_book_cover,
+            commands::clear_book_cover,
             commands::set_doc_cover,
             commands::list_annotations,
             commands::save_annotation,
@@ -90,6 +107,8 @@ pub fn run() {
             commands::db_info,
             commands::list_sessions,
             commands::upsert_session,
+            commands::set_session_book,
+            commands::set_session_scope,
             commands::delete_session,
             commands::add_message,
             commands::get_messages,

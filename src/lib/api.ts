@@ -8,7 +8,21 @@ export const isPreview = !inTauri;
 const invoke = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
   inTauri ? tauriInvoke<T>(cmd, args) : mockInvoke<T>(cmd, args);
 
-import type { AgentEvent, Annotation, Block, Doc, DocKind, Hit, Message, Quote, Session, XRay } from "./types";
+import type {
+  AgentEvent,
+  Annotation,
+  Block,
+  Book,
+  Hit,
+  ImportItem,
+  ImportSummary,
+  Message,
+  Quote,
+  ScanItem,
+  Scope,
+  Session,
+  XRay,
+} from "./types";
 
 export interface ImportProgress {
   name: string;
@@ -18,9 +32,20 @@ export interface ImportProgress {
   message: string | null;
 }
 
-/** 导入文件或文件夹（解析、分块、建索引都在 Rust 后台线程里做） */
-export const importPaths = (paths: string[]) =>
-  invoke<{ imported: number; failed: string[] }>("import_paths", { paths });
+/** 导入前先看看这些路径是什么：文件还是文件夹、里面有多少能导入的、是不是已经在书架上 */
+export const scanPaths = (paths: string[]) => invoke<ScanItem[] | null>("scan_paths", { paths }).then((l) => l ?? []);
+
+const EMPTY_SUMMARY: ImportSummary = { added: 0, updated: 0, unchanged: 0, missing: 0, skipped: [], failed: [], books: [] };
+/** 导入（解析、分块、建索引都在 Rust 后台线程里做）。每一项说明怎么归成书 */
+export const importPaths = (items: ImportItem[]) =>
+  invoke<ImportSummary | null>("import_paths", { items }).then((r) => r ?? EMPTY_SUMMARY);
+/** 按文件夹现在的样子更新一本书：新文件加进来，改过的重建，带笔记的篇即使文件不见了也留着 */
+export const rescanBook = (bookId: string) =>
+  invoke<ImportSummary | null>("rescan_book", { bookId }).then((r) => r ?? EMPTY_SUMMARY);
+/** 把一本多篇的书拆成一篇一本（笔记、进度都跟着各自的篇走） */
+export const splitBook = (bookId: string) => invoke<void>("split_book", { bookId });
+/** 文件或文件夹挪了地方：让用户重新指给应用。取消返回 false */
+export const relocateBook = (bookId: string) => invoke<boolean | null>("relocate_book", { bookId }).then((r) => !!r);
 
 export const onImportProgress = (fn: (p: ImportProgress) => void): Promise<UnlistenFn> =>
   inTauri ? listen<ImportProgress>("import-progress", (e) => fn(e.payload)) : Promise.resolve(() => {});
@@ -41,29 +66,32 @@ export async function onFileDrop(fn: (paths: string[]) => void, onHover: (over: 
 
 export const documentText = (docId: string) => invoke<string>("document_text", { docId });
 
-export async function listDocuments(): Promise<Doc[]> {
-  const raw = await invoke<
-    {
-      id: string; title: string; path: string | null; kind: string; pages: number | null; chunk_count: number;
-      created_at: number; author?: string | null; has_cover?: boolean; progress?: number | null; read_at?: number | null;
-    }[]
-  >("list_documents");
-  return raw.map((d) => ({
-    id: d.id,
-    title: d.title,
-    path: d.path,
-    kind: d.kind as DocKind,
-    pages: d.pages,
-    chunkCount: d.chunk_count,
-    createdAt: d.created_at,
-    author: d.author ?? null,
-    hasCover: !!d.has_cover,
-    progress: d.progress ?? null,
-    readAt: d.read_at ?? null,
-  }));
-}
+// ---------- 书架 ----------
 
+export const listBooks = () => invoke<Book[] | null>("list_books").then((l) => l ?? []);
+export const updateBook = (bookId: string, title: string, author: string | null) =>
+  invoke<void>("update_book", { bookId, title, author });
+/** on 传 null 是恢复按类型的默认值 */
+export const setBookSpoiler = (bookId: string, on: boolean | null) => invoke<void>("set_book_spoiler", { bookId, on });
+/** 从书架移除：划线、笔记、进度、透视一起删，原文件不动 */
+export const deleteBook = (bookId: string, withSessions: boolean) => invoke<void>("delete_book", { bookId, withSessions });
+/** 移除书里的一篇；是最后一篇的话书也一起移除 */
 export const deleteDocument = (docId: string) => invoke<void>("delete_document", { docId });
+/** 把一篇往前（-1）或往后（1）挪一位 */
+export const movePart = (docId: string, delta: -1 | 1) => invoke<void>("move_part", { docId, delta });
+
+/** 封面的 blob 地址；没有封面返回 null */
+export async function bookCover(bookId: string): Promise<string | null> {
+  const buf = await invoke<ArrayBuffer | null>("book_cover", { bookId });
+  if (!buf || !buf.byteLength) return null;
+  return URL.createObjectURL(new Blob([buf], { type: "image/jpeg" }));
+}
+/** 让用户挑一张图当封面（文件对话框由 Rust 打开）。取消返回 false */
+export const pickBookCover = (bookId: string) => invoke<boolean | null>("pick_book_cover", { bookId }).then((r) => !!r);
+export const clearBookCover = (bookId: string) => invoke<void>("clear_book_cover", { bookId });
+export const revealBook = (bookId: string) => invoke<void>("reveal_book", { bookId });
+export const revealDoc = (docId: string) => invoke<void>("reveal_doc", { docId });
+
 /** 重建索引：按原文件重新解析所有文档（划线、笔记、进度不动） */
 export const resetIndex = () => invoke<{ imported: number; failed: string[] } | null>("reset_index");
 /** 让后台给还没有向量的片段补向量 */
@@ -94,31 +122,30 @@ export interface TocItem {
 export const documentBook = (docId: string) =>
   invoke<{ sections: BookSection[]; toc: TocItem[] }>("document_book", { docId });
 
-/** 封面缩略图的 blob 地址；没有封面返回 null */
-export async function docCover(docId: string): Promise<string | null> {
-  const buf = await invoke<ArrayBuffer | null>("doc_cover", { docId });
-  if (!buf || !buf.byteLength) return null;
-  return URL.createObjectURL(new Blob([buf], { type: "image/jpeg" }));
-}
+/** 阅读器把一篇的第一页送过来当自动封面（PDF 这类没法在 Rust 里取封面的） */
 export const setDocCover = (docId: string, data: Uint8Array) =>
   invoke<void>("set_doc_cover", { docId, data: Array.from(data) });
 
-export const listAnnotations = (docId?: string) =>
-  invoke<Annotation[] | null>("list_annotations", { docId: docId ?? null }).then((l) => l ?? []);
+/** 一篇的标记，或者整本书所有篇的标记（按篇的先后排） */
+export const listAnnotations = (of: { docId?: string; bookId?: string }) =>
+  invoke<Annotation[] | null>("list_annotations", { docId: of.docId ?? null, bookId: of.bookId ?? null }).then((l) => l ?? []);
 export const saveAnnotation = (annotation: Annotation) => invoke<void>("save_annotation", { annotation });
 export const deleteAnnotation = (id: string) => invoke<void>("delete_annotation", { id });
 export const readingState = (docId: string) =>
-  invoke<{ location: string | null; fraction: number } | null>("reading_state", { docId });
-export const saveReadingState = (docId: string, location: string, fraction: number) =>
-  invoke<void>("save_reading_state", { docId, location, fraction });
+  invoke<{ location: string | null; fraction: number; furthest?: number; furthestPage?: number | null } | null>("reading_state", {
+    docId,
+  });
+/** page：PDF 的页码 / EPUB 的第几节，用来记「读到过的最远处」 */
+export const saveReadingState = (docId: string, location: string, fraction: number, page: number | null) =>
+  invoke<void>("save_reading_state", { docId, location, fraction, page });
 // ---------- 透视 ----------
 
-export const xrayGet = (docId: string) => invoke<XRay | null>("xray_get", { docId }).then((x) => x ?? { units: [], total: 0 });
+export const xrayGet = (bookId: string) => invoke<XRay | null>("xray_get", { bookId }).then((x) => x ?? { units: [], total: 0 });
 /** 开始（或接着）透视；在后台跑，进度走 onXRayProgress */
-export const xrayBuild = (docId: string) => invoke<void>("xray_build", { docId });
-export const xrayClear = (docId: string) => invoke<void>("xray_clear", { docId });
+export const xrayBuild = (bookId: string) => invoke<void>("xray_build", { bookId });
+export const xrayClear = (bookId: string) => invoke<void>("xray_clear", { bookId });
 export interface XRayProgress {
-  docId: string;
+  bookId: string;
   done: number;
   total: number;
   error: string | null;
@@ -135,7 +162,7 @@ export const getSetting = (key: string) => invoke<string | null>("get_setting", 
 export const setSetting = (key: string, value: string) => invoke<void>("set_setting", { key, value });
 export const dbInfo = () =>
   invoke<{
-    docs: number; chunks: number; sessions: number; dbPath: string; dbSizeBytes: number; saveDir: string;
+    docs: number; books?: number; chunks: number; sessions: number; dbPath: string; dbSizeBytes: number; saveDir: string;
     vectors?: number; embedModel?: string | null;
   }>("db_info");
 
@@ -143,13 +170,37 @@ export const dbInfo = () =>
 
 export async function listSessions(): Promise<Session[]> {
   const raw = await invoke<
-    { id: string; sdk_session_id: string | null; title: string; updated_at: number }[]
+    {
+      id: string; sdk_session_id: string | null; title: string; updated_at: number;
+      book_id?: string | null; book_title?: string | null; scope?: string | null;
+    }[]
   >("list_sessions");
-  return raw.map((s) => ({ id: s.id, sdkSessionId: s.sdk_session_id, title: s.title, updatedAt: s.updated_at }));
+  return (raw ?? []).map((s) => {
+    let scope: Scope | null = null;
+    try {
+      scope = s.scope ? (JSON.parse(s.scope) as Scope) : null;
+    } catch {
+      // 存坏了就当没选过
+    }
+    return {
+      id: s.id,
+      sdkSessionId: s.sdk_session_id,
+      title: s.title,
+      updatedAt: s.updated_at,
+      bookId: s.book_id ?? null,
+      bookTitle: s.book_title ?? null,
+      scope,
+    };
+  });
 }
 
-export const upsertSession = (id: string, title: string, sdkSessionId: string | null) =>
-  invoke<void>("upsert_session", { id, title, sdkSessionId });
+/** bookId 只在新建会话时生效：会话关联哪本书在创建时定下来，之后的更新不会改它 */
+export const upsertSession = (id: string, title: string, sdkSessionId: string | null, bookId: string | null = null) =>
+  invoke<void>("upsert_session", { id, title, sdkSessionId, bookId });
+/** 手动把一段对话归到某本书下，或者取消关联 */
+export const setSessionBook = (id: string, bookId: string | null) => invoke<void>("set_session_book", { id, bookId });
+export const setSessionScope = (id: string, scope: Scope | null) =>
+  invoke<void>("set_session_scope", { id, scope: scope ? JSON.stringify(scope) : null });
 export const deleteSession = (id: string) => invoke<void>("delete_session", { id });
 
 interface MessageMeta {

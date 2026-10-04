@@ -4,7 +4,7 @@
 //!   DOCAGENT_TEST_KEY=sk-... cargo test --test e2e -- --ignored --nocapture
 //! 可选：DOCAGENT_TEST_BASE_URL / DOCAGENT_TEST_MODEL
 
-use docagent_lib::{agent, chunk, db, parse, server, xray};
+use docagent_lib::{agent, books, chunk, db, parse, server, xray};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -198,7 +198,7 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
     let epub = root.join("test-docs/示例小说.epub");
     let parsed = parse::extract(&epub).unwrap();
     let (book_chunks, _, _) = chunks(&epub);
-    let book_id = db::import_document(
+    let novel = db::import_document(
         &mut conn,
         &db::NewDoc {
             title: parsed.title.as_deref().unwrap(),
@@ -215,7 +215,7 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
         &conn,
         &db::Annotation {
             id: "n1".into(),
-            doc_id: book_id.clone(),
+            doc_id: novel.clone(),
             kind: "highlight".into(),
             cfi: "epubcfi(/6/2!/4/4,/1:0,/1:10)".into(),
             text: "这台相机他认得——三十年前，是他亲手卖出去的。".into(),
@@ -230,6 +230,8 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
         },
     )
     .unwrap();
+    // 这一篇所在的书（单个电子书自己成一本）
+    let novel_book = books::book_of(&conn, &novel).unwrap().unwrap();
     let conn = Arc::new(Mutex::new(conn));
     let api = server::start(conn, save_dir.clone()).unwrap();
 
@@ -321,7 +323,10 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
         r3b.answer
     );
     assert!(
-        r3b.answer.contains("文档"),
+        // 措辞不固定：现在提示词里说的是「书架」，模型可能说文档、资料、书架
+        ["文档", "资料", "书架"]
+            .iter()
+            .any(|w| r3b.answer.contains(w)),
         "应说明这部分不是出自用户文档：{}",
         r3b.answer
     );
@@ -421,7 +426,9 @@ fn 导入文档_提问_引用_拒答_续聊_审批保存() {
 
     // 助手知道用户读到哪：问「这一章」不用再选，直接读那一节的原文
     let reading = serde_json::json!({ "reading": {
-        "docId": book_id, "docTitle": "槐花开", "page": 2, "chapter": "第二章 底片", "fraction": 0.5,
+        "docId": novel, "bookId": novel_book, "bookTitle": "槐花开", "docTitle": "槐花开",
+        "kind": "epub", "part": 1, "partCount": 1,
+        "page": 2, "chapter": "第二章 底片", "fraction": 0.5, "spoilerFree": true,
     }});
     println!("[问] （正在看第二章）这一章讲了什么？");
     let rr = ask_with(
@@ -572,6 +579,8 @@ fn 透视_真实模型逐段提取要点和人物() {
         &book_chunks,
     )
     .unwrap();
+    // 透视是按书做的
+    let book = books::book_of(&conn, &id).unwrap().unwrap();
     let conn = Arc::new(Mutex::new(conn));
     let provider: agent::Provider = serde_json::from_value(serde_json::json!({
         "baseUrl": std::env::var("DOCAGENT_TEST_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com/anthropic".into()),
@@ -582,13 +591,13 @@ fn 透视_真实模型逐段提取要点和人物() {
 
     let t = std::time::Instant::now();
     let last = Mutex::new(None);
-    xray::build(&conn, &id, xray::completer(provider), |p| {
+    xray::build(&conn, &book, xray::completer(provider), |p| {
         println!("  进度 {}/{} {:?}", p.done, p.total, p.error);
         *last.lock().unwrap() = Some(p);
     });
     let p = last.into_inner().unwrap().unwrap();
     assert!(p.finished && p.error.is_none(), "{p:?}");
-    let x = xray::get(&conn.lock().unwrap(), &id).unwrap();
+    let x = xray::get(&conn.lock().unwrap(), &book).unwrap();
     println!("用时 {:?}，共 {} 段", t.elapsed(), x.total);
     for u in &x.units {
         println!("[{}] {} —— {}", u.unit, u.title, u.summary);

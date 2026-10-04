@@ -27,3 +27,15 @@ export function citedNumbers(text: string): number[] {
   for (const p of splitCitations(text)) if (p.type === "cite") set.add(p.n);
   return [...set].sort((a, b) => a - b);
 }
+
+/** 一个位置该叫「页」还是「节」：PDF、漫画是页，EPUB 的是章节序号。
+ *  kind 没有时（这次改动之前存下来的消息）退回去看标题是不是 .pdf 结尾 */
+export function unitOf(kind: string | undefined, legacyTitle = ""): "页" | "节" {
+  if (kind) return kind === "pdf" || kind === "cbz" ? "页" : "节";
+  return /\.pdf$/i.test(legacyTitle) ? "页" : "节";
+}
+
+/** 引用后面跟的位置说明，如「 · 第 3 页」 */
+export function whereLabel(kind: string | undefined, title: string, page: number | null | undefined): string {
+  return page ? ` · 第 ${page} ${unitOf(kind, title)}` : "";
+}

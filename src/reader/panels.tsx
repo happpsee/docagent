@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Download, Pencil, Sparkles, Trash2, X } from "lucide-react";
 import type * as api from "@/lib/api";
-import type { Annotation } from "@/lib/types";
+import type { Annotation, Doc } from "@/lib/types";
 import { HL } from "./engine";
 
 const empty = "px-4 py-8 text-center text-[12px] leading-relaxed text-text-4";
@@ -16,7 +16,45 @@ export function TocPanel(p: {
   fixed: boolean;
   total: number;
   page: number;
+  /** 多篇的书：各篇是目录的第一层，正开着的那一篇下面挂它自己的目录 */
+  parts: Doc[] | null;
+  currentPart: string;
+  onPart: (d: Doc) => void;
 }) {
+  if (p.parts) {
+    return (
+      <ul className="py-1.5">
+        {p.parts.map((d) => {
+          const active = d.id === p.currentPart;
+          return (
+            <li key={d.id}>
+              <button
+                onClick={() => !active && p.onPart(d)}
+                disabled={d.missing}
+                className={`flex w-full items-center gap-2 py-1.5 pl-3.5 pr-3 text-left text-[13px] disabled:opacity-45 ${
+                  active ? "font-medium text-accent" : "text-text hover:bg-nav-card"
+                }`}
+                title={d.missing ? `${d.name}（原文件找不到了）` : d.name}
+              >
+                <span className="num w-5 shrink-0 text-[11px] text-text-4">{d.position + 1}</span>
+                <span className="min-w-0 flex-1 truncate">{d.name}</span>
+                {d.progress != null && d.progress > 0.005 && (
+                  <span className="num shrink-0 text-[10px] text-text-4">{d.progress >= 0.995 ? "读完" : `${Math.round(d.progress * 100)}%`}</span>
+                )}
+              </button>
+              {active && p.toc.length > 0 && (
+                <ul className="mb-1 ml-[22px] border-l border-hairline">
+                  {p.toc.map((item, i) => (
+                    <TocRow key={i} item={item} depth={0} current={p.current} onGo={p.onGo} />
+                  ))}
+                </ul>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    );
+  }
   if (!p.toc.length) {
     if (p.fixed && p.total > 0) {
       return (
@@ -71,6 +109,8 @@ function TocRow({ item, depth, current, onGo }: { item: api.TocItem; depth: numb
 
 export function NotesPanel(p: {
   notes: Annotation[];
+  /** 多篇的书：这条标记在哪一篇上（单篇的书返回空串） */
+  partName: (docId: string) => string;
   onGo: (a: Annotation) => void;
   onSave: (a: Annotation) => void;
   onDelete: (a: Annotation) => void;
@@ -98,7 +138,7 @@ export function NotesPanel(p: {
       </div>
       <ul className="px-2 py-1">
         {p.notes.map((a) => {
-          const label = a.label || (a.page ? `第 ${a.page} 页` : "");
+          const label = [p.partName(a.docId), a.label || (a.page ? `第 ${a.page} 页` : "")].filter(Boolean).join(" · ");
           const head = label !== chapter ? label : null;
           chapter = label;
           return (
@@ -173,14 +213,21 @@ export function NotesPanel(p: {
 
 // ---------- 书签 ----------
 
-export function BookmarksPanel(p: { bookmarks: Annotation[]; onGo: (a: Annotation) => void; onDelete: (a: Annotation) => void }) {
+export function BookmarksPanel(p: {
+  bookmarks: Annotation[];
+  partName: (docId: string) => string;
+  onGo: (a: Annotation) => void;
+  onDelete: (a: Annotation) => void;
+}) {
   if (!p.bookmarks.length) return <p className={empty}>还没有书签。<br />点右上角的书签按钮，记住当前这一页。</p>;
   return (
     <ul className="px-2 py-1.5">
       {p.bookmarks.map((b) => (
         <li key={b.id} className="group flex items-start gap-1 rounded-lg px-2 py-2 hover:bg-nav-card">
           <button className="min-w-0 flex-1 text-left" onClick={() => p.onGo(b)}>
-            <div className="truncate text-[12px] text-text-3">{b.label || (b.page ? `第 ${b.page} 页` : "书签")}</div>
+            <div className="truncate text-[12px] text-text-3">
+              {[p.partName(b.docId), b.label || (b.page ? `第 ${b.page} 页` : "")].filter(Boolean).join(" · ") || "书签"}
+            </div>
             {b.text ? <div className="mt-0.5 line-clamp-2 text-[13px] leading-relaxed text-text">{b.text}</div> : null}
           </button>
           <button

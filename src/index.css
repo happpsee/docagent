@@ -827,3 +827,7 @@ body, .dark body { background: var(--color-bg); }
 /* 引擎内部会调 scrollIntoView，别让它把整个窗口也带着滚走 */
 html, body { overflow: clip; }
 .reader-stage { overflow: clip; }
+
+/* 危险操作的按钮：实色，不要渐变和光晕（和主按钮一个路子） */
+.arc-btn-primary[data-tone="danger"] { color: #fff; background: var(--color-danger); box-shadow: none; }
+.arc-btn-primary[data-tone="danger"]:hover:not(:disabled) { background: color-mix(in oklab, var(--color-danger) 88%, black); }

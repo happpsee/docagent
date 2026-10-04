@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
-import { ArrowUp, FileText, Folder, Quote as QuoteIcon, Square, X } from "lucide-react";
-import type { Quote } from "@/lib/types";
+import { ArrowUp, Folder, Quote as QuoteIcon, Square, X } from "lucide-react";
+import { whereLabel } from "@/lib/citations";
+import type { Book, Doc, Quote, Scope } from "@/lib/types";
+import { ScopePicker } from "./ScopePicker";
 
 interface Props {
   value: string;
@@ -10,9 +12,16 @@ interface Props {
   busy: boolean;
   ready: boolean;
   model: string;
-  docCount: number;
-  scopeCount: number;
+  /** 窄栏里：地方小，模型名不显示，工作文件夹只留图标 */
+  compact?: boolean;
   autoFocus?: boolean;
+  /** 检索范围：见 ScopePicker */
+  books: Book[];
+  book: Book | null;
+  openDoc: Doc | null;
+  scope: Scope | null;
+  onScope: (s: Scope | null) => void;
+  onSpoiler: (book: Book, on: boolean) => void;
   /** 从阅读器带过来的引文，会和问题一起发出去 */
   quote?: Quote | null;
   onClearQuote?: () => void;
@@ -41,9 +50,6 @@ export function Composer(p: Props) {
     if (p.quote) ref.current?.focus();
   }, [p.quote]);
 
-  const scope =
-    p.docCount === 0 ? "还没有文档" : p.scopeCount ? `已选 ${p.scopeCount} 份文档` : `全部 ${p.docCount} 份文档`;
-
   return (
     <div className="rounded-[20px] border border-hairline-strong bg-surface-2 shadow-[0_2px_12px_-4px_rgb(0_0_0/0.08)] transition-colors focus-within:border-text-4">
       {p.quote && (
@@ -53,7 +59,7 @@ export function Composer(p: Props) {
             <div className="line-clamp-3 text-[12px] leading-5 text-text-2">{p.quote.text}</div>
             <div className="mt-0.5 truncate text-[11px] text-text-4">
               {p.quote.docTitle}
-              {p.quote.page ? ` · 第 ${p.quote.page} 页` : ""}
+              {whereLabel(p.quote.kind, p.quote.docTitle, p.quote.page)}
             </div>
           </div>
           <button aria-label="移除引文" onClick={p.onClearQuote} className="text-text-4 hover:text-text">
@@ -80,7 +86,7 @@ export function Composer(p: Props) {
       />
       <div className="flex items-center gap-2 px-3 pb-3 pt-2">
         <span
-          className={`group inline-flex min-w-0 items-center rounded-lg text-[12px] ${
+          className={`group inline-flex min-w-0 shrink-0 items-center rounded-lg text-[12px] ${
             p.workspace ? "bg-segment-bg text-text-2" : "text-text-3 hover:bg-nav-card"
           }`}
         >
@@ -90,20 +96,17 @@ export function Composer(p: Props) {
             title={p.workspace ?? "选一个文件夹，让助手在里面干活（读代码、写文件），并加载那里的 .docagent 配置"}
           >
             <Folder className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{p.workspace ? p.workspace.split("/").pop() : "工作文件夹"}</span>
+            {!p.compact && <span className="truncate">{p.workspace ? p.workspace.split("/").pop() : "工作文件夹"}</span>}
           </button>
-          {p.workspace && (
+          {p.workspace && !p.compact && (
             <button aria-label="取消工作文件夹" className="pr-1.5 text-text-4 hover:text-text" onClick={p.onClearWorkspace}>
               <X className="h-3 w-3" />
             </button>
           )}
         </span>
-        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] text-text-3">
-          <FileText className="h-3.5 w-3.5" />
-          {scope}
-        </span>
+        <ScopePicker books={p.books} book={p.book} openDoc={p.openDoc} scope={p.scope} onScope={p.onScope} onSpoiler={p.onSpoiler} />
         <span className="flex-1" />
-        <span className="text-[12px] text-text-4">{p.model}</span>
+        {!p.compact && <span className="shrink-0 text-[12px] text-text-4">{p.model}</span>}
         {p.busy ? (
           <button
             aria-label="停止"

@@ -32,6 +32,12 @@ impl Parsed {
     }
 }
 
+/// 能导入的扩展名（和 kind_of 认的是同一批），给文件对话框做筛选用
+pub const EXTENSIONS: [&str; 15] = [
+    "pdf", "docx", "md", "markdown", "txt", "text", "epub", "mobi", "azw", "azw3", "kf8", "prc",
+    "fb2", "fbz", "cbz",
+];
+
 pub fn kind_of(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_lowercase().as_str() {
         "pdf" => Some("pdf"),
@@ -206,5 +212,9 @@ mod tests {
     fn 不支持的类型报错() {
         assert!(extract(Path::new("/tmp/a.xyz")).is_err());
         assert_eq!(kind_of(Path::new("a.PDF")), Some("pdf"));
+        // 文件对话框里列的扩展名都得是真能导入的
+        assert!(EXTENSIONS
+            .iter()
+            .all(|ext| kind_of(Path::new(&format!("a.{ext}"))).is_some()));
     }
 }

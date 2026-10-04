@@ -5,8 +5,10 @@
 //! 索引就在同一个数据库文件里，和片段在同一个事务里增删，不会对不上。
 
 use crate::db::SearchHit;
+use crate::spoiler::Access;
 use anyhow::Result;
 use jieba_rs::Jieba;
+use rusqlite::types::Value;
 use rusqlite::{params, Connection};
 use std::sync::OnceLock;
 
@@ -115,12 +117,10 @@ pub fn query_terms(query: &str) -> Vec<String> {
 ///
 /// 词之间是「或」的关系（问句不可能每个词都出现在原文里），但至少要命中一半的词，
 /// 否则「推荐一首适合跑步的歌」会因为合同里有个「适合」就算命中。
-pub fn search(
-    conn: &Connection,
-    query: &str,
-    n: usize,
-    doc_ids: Option<&[String]>,
-) -> Result<Vec<SearchHit>> {
+///
+/// access 是这次能看哪些片段（限定的范围、防剧透的界线），在查询里面就筛掉：
+/// LIMIT 数的只是能看的片段，范围外的内容再相关也占不了名额。
+pub fn search(conn: &Connection, query: &str, n: usize, access: &Access) -> Result<Vec<SearchHit>> {
     let terms = query_terms(&crate::parse::normalize(query));
     if terms.is_empty() {
         return Ok(vec![]);
@@ -131,17 +131,27 @@ pub fn search(
         .collect::<Vec<_>>()
         .join(" OR ");
     let need = terms.len().div_ceil(2);
-    let mut stmt = conn.prepare(
-        "SELECT c.id, c.doc_id, c.idx, c.page, c.text, d.title
+    // 「命中一半」是取出来之后再筛的，所以多取一些
+    let mut args = vec![Value::Text(expr), Value::Integer((n * 8 + 40) as i64)];
+    let filter = match access.filter(3) {
+        Some((sql, more)) => {
+            args.extend(more);
+            format!("AND {sql}")
+        }
+        None => String::new(),
+    };
+    // CROSS JOIN 是说给 SQLite 听的：按写的顺序连，全文索引在最外层。
+    // 这样才是「按相关度一条一条往下走，走到够数为止」，不会被改成先扫片段表再回头查索引
+    let mut stmt = conn.prepare(&format!(
+        "SELECT c.id, c.doc_id, c.idx, c.page, c.text, d.title, d.kind, COALESCE(d.book_id, '')
          FROM fts_chunks
-         JOIN chunks c ON c.id = fts_chunks.rowid
-         JOIN docs d ON d.id = c.doc_id
-         WHERE fts_chunks MATCH ?1
+         CROSS JOIN chunks c ON c.id = fts_chunks.rowid
+         CROSS JOIN docs d ON d.id = c.doc_id
+         WHERE fts_chunks MATCH ?1 {filter}
          ORDER BY rank
-         LIMIT ?2",
-    )?;
-    // 限定文档范围和「命中一半」都是取出来之后再筛，所以多取一些
-    let rows = stmt.query_map(params![expr, (n * 8 + 40) as i64], |r| {
+         LIMIT ?2"
+    ))?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(args), |r| {
         Ok(SearchHit {
             chunk_id: r.get(0)?,
             doc_id: r.get(1)?,
@@ -149,6 +159,8 @@ pub fn search(
             page: r.get(3)?,
             text: r.get(4)?,
             doc_title: r.get(5)?,
+            doc_kind: r.get(6)?,
+            book_id: r.get(7)?,
             distance: 1.0,
             via: "fts",
         })
@@ -156,11 +168,6 @@ pub fn search(
     let mut out = Vec::new();
     for row in rows {
         let hit = row?;
-        if let Some(ids) = doc_ids {
-            if !ids.is_empty() && !ids.iter().any(|i| i == &hit.doc_id) {
-                continue;
-            }
-        }
         let lower = hit.text.to_lowercase();
         if terms.iter().filter(|t| lower.contains(t.as_str())).count() < need {
             continue;
@@ -259,24 +266,24 @@ mod tests {
     #[test]
     fn 问句能找到对应条款_最相关的排第一() {
         let conn = library();
-        let hits = search(&conn, "质保期多久？", 3, None).unwrap();
+        let hits = search(&conn, "质保期多久？", 3, &Access::all()).unwrap();
         assert!(hits[0].text.contains("质保期为"), "{hits:?}");
-        let hits = search(&conn, "预付款什么时候支付", 3, None).unwrap();
+        let hits = search(&conn, "预付款什么时候支付", 3, &Access::all()).unwrap();
         assert!(hits[0].text.contains("预付款"), "{hits:?}");
     }
 
     #[test]
     fn 短词_英文型号_数字都能搜() {
         let conn = library();
-        assert_eq!(search(&conn, "甲方", 5, None).unwrap().len(), 3);
-        assert!(search(&conn, "ic-7700", 5, None).unwrap()[0]
+        assert_eq!(search(&conn, "甲方", 5, &Access::all()).unwrap().len(), 3);
+        assert!(search(&conn, "ic-7700", 5, &Access::all()).unwrap()[0]
             .text
             .contains("IC-7700"));
-        assert!(search(&conn, "96000", 5, None).unwrap()[0]
+        assert!(search(&conn, "96000", 5, &Access::all()).unwrap()[0]
             .text
             .contains("服务费"));
         // 两个词都命中的排在只命中一个的前面
-        assert!(search(&conn, "甲方 保险", 5, None).unwrap()[0]
+        assert!(search(&conn, "甲方 保险", 5, &Access::all()).unwrap()[0]
             .text
             .contains("保险"));
     }
@@ -284,36 +291,96 @@ mod tests {
     #[test]
     fn 无关的问题不命中_只碰上个别常见词不算() {
         let conn = library();
-        assert!(search(&conn, "推荐一首适合跑步听的歌", 5, None)
+        assert!(search(&conn, "推荐一首适合跑步听的歌", 5, &Access::all())
             .unwrap()
             .is_empty());
-        assert!(search(&conn, "怎么？", 5, None).unwrap().is_empty());
-        assert!(search(&conn, "", 5, None).unwrap().is_empty());
+        assert!(search(&conn, "怎么？", 5, &Access::all())
+            .unwrap()
+            .is_empty());
+        assert!(search(&conn, "", 5, &Access::all()).unwrap().is_empty());
     }
 
     #[test]
     fn 可以限定在某份文档里_删文档后搜不到() {
         let mut conn = library();
-        let docs = db::list_documents(&conn).unwrap();
-        let agreement = docs
-            .iter()
-            .find(|d| d.title == "服务协议")
-            .unwrap()
-            .id
-            .clone();
-        let hits = search(&conn, "甲方", 5, Some(std::slice::from_ref(&agreement))).unwrap();
+        let agreement: String = conn
+            .query_row(
+                "SELECT id FROM docs WHERE title = '服务协议'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let only = Access::of(&conn, Some(std::slice::from_ref(&agreement)), None).unwrap();
+        let hits = search(&conn, "甲方", 5, &only).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].doc_title, "服务协议");
-        db::delete_document(&mut conn, &agreement).unwrap();
-        assert!(search(&conn, "服务费", 5, None).unwrap().is_empty());
+        assert_eq!(hits[0].doc_kind, "md");
+        assert_eq!(
+            Some(hits[0].book_id.clone()),
+            crate::books::book_of(&conn, &agreement).unwrap()
+        );
+        crate::books::delete_document(&mut conn, &agreement).unwrap();
+        assert!(search(&conn, "服务费", 5, &Access::all())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn 限定范围在查询里面筛_别的书占不了名额() {
+        let mut conn = library();
+        let doc = |title: &'static str, path: &'static str| NewDoc {
+            title,
+            path,
+            kind: "md",
+            pages: None,
+            author: None,
+            cover: None,
+        };
+        // 一本大部头，一百多块都在反复讲蒸汽机；一本小册子只顺带提了一句
+        let tome: Vec<TextChunk> = (0..120)
+            .map(|i| TextChunk {
+                idx: i,
+                page: None,
+                text: format!("蒸汽机，蒸汽机，蒸汽机。第 {i} 条。"),
+            })
+            .collect();
+        db::import_document(&mut conn, &doc("蒸汽机大全", "/tome.md"), &tome).unwrap();
+        let leaflet = db::import_document(
+            &mut conn,
+            &doc("纺织厂手册", "/leaflet.md"),
+            &[TextChunk {
+                idx: 0,
+                page: None,
+                text: format!(
+                    "{}顺带一提，厂里那台蒸汽机每周要保养一次。",
+                    "纺织厂的日常管理包括排班、领料、验布和清扫车间。".repeat(12)
+                ),
+            }],
+        )
+        .unwrap();
+
+        // 不限范围：排在前面的全是大部头，小册子那一句排在最后（第 121 名）
+        let top = search(&conn, "蒸汽机", 3, &Access::all()).unwrap();
+        assert_eq!(top.len(), 3);
+        assert!(top.iter().all(|h| h.doc_title == "蒸汽机大全"), "{top:?}");
+        let everything = search(&conn, "蒸汽机", 200, &Access::all()).unwrap();
+        assert_eq!(everything.len(), 121);
+        assert_eq!(everything[120].doc_id, leaflet);
+        // 只在小册子里找：它那一句在全库里排在一百多名开外，照样找得到
+        let only = Access::of(&conn, Some(std::slice::from_ref(&leaflet)), None).unwrap();
+        let hits = search(&conn, "蒸汽机", 3, &only).unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].text.contains("每周要保养一次"));
     }
 
     #[test]
     fn 索引丢了能按现有片段重建() {
         let conn = library();
         conn.execute("DELETE FROM fts_chunks", []).unwrap();
-        assert!(search(&conn, "质保期", 3, None).unwrap().is_empty());
+        assert!(search(&conn, "质保期", 3, &Access::all())
+            .unwrap()
+            .is_empty());
         rebuild_if_empty(&conn).unwrap();
-        assert_eq!(search(&conn, "质保期", 3, None).unwrap().len(), 1);
+        assert_eq!(search(&conn, "质保期", 3, &Access::all()).unwrap().len(), 1);
     }
 }
