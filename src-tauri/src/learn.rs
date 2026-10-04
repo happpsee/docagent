@@ -682,6 +682,34 @@ pub fn delete_note(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// 助手在对话里记下 / 改写的一条（auto = 1：是它观察到的，不是用户自己写的）。
+/// 一模一样的话不重复记；改用户自己写过的那条时，仍然算用户的
+pub fn agent_note(conn: &Connection, id: Option<i64>, kind: &str, content: &str, evidence: &str, now: i64) -> Result<i64> {
+    if let Some(id) = id {
+        let n = conn.execute(
+            "UPDATE learner_notes SET kind = ?2, content = ?3, evidence = CASE WHEN ?4 = '' THEN evidence ELSE ?4 END, updated_at = ?5 WHERE id = ?1",
+            params![id, kind, content, evidence, now],
+        )?;
+        if n == 0 {
+            anyhow::bail!("没有编号为 {id} 的这一条");
+        }
+        return Ok(id);
+    }
+    if let Some(had) = conn
+        .query_row("SELECT id FROM learner_notes WHERE content = ?1", params![content], |r| r.get(0))
+        .optional()?
+    {
+        return Ok(had);
+    }
+    conn.execute(
+        "INSERT INTO learner_notes(kind, content, evidence, auto, updated_at) VALUES (?1, ?2, ?3, 1, ?4)",
+        params![kind, content, evidence, now],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub const NOTE_KINDS: [&str; 5] = ["background", "preference", "strength", "weakness", "misconception"];
+
 /// 这个概念上记着的误解（自动记的或者用户改过的）
 pub fn misconception(conn: &Connection, book_id: &str, concept: &str) -> Result<Option<String>> {
     Ok(conn
@@ -942,6 +970,13 @@ mod tests {
         note_verdict(&conn, &item, "又错", &wrong, 4).unwrap();
         let id = notes(&conn).unwrap()[0].id;
         save_note(&conn, Some(id), "misconception", "我老把通知和请求弄混", 5).unwrap();
+        // 助手在对话里记的：同一句话不重复记，可以按编号改写
+        let a = agent_note(&conn, None, "background", "做前端三年", "用户说的", 7).unwrap();
+        assert_eq!(agent_note(&conn, None, "background", "做前端三年", "", 8).unwrap(), a);
+        agent_note(&conn, Some(a), "background", "做前端三年，在学 Rust", "", 9).unwrap();
+        assert!(agent_note(&conn, Some(9999), "background", "x", "", 9).is_err());
+        assert_eq!(notes(&conn).unwrap().iter().filter(|n| n.kind == "background").count(), 1);
+        delete_note(&conn, a).unwrap();
         note_verdict(&conn, &item, "对了", &right, 6).unwrap();
         assert_eq!(notes(&conn).unwrap()[0].content, "我老把通知和请求弄混");
     }

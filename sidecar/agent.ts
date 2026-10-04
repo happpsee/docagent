@@ -402,6 +402,8 @@ const FREE = new Set([
   "mcp__docagent__list_notes",
   "mcp__docagent__read_section",
   "mcp__docagent__show_in_reader",
+  "mcp__docagent__remember",
+  "mcp__docagent__forget",
   // 下面两个的审批在工具内部做
   "mcp__docagent__save_note",
   "mcp__docagent__highlight",
@@ -762,6 +764,34 @@ function docTools(ask: Ask) {
         },
       ),
       tool(
+        "remember",
+        "把关于这位读者本人的一件事记进「我的画像」，以后每次对话、出题、讲解都会用到。" +
+          "只记对以后有用、短期不会变的：他的背景（职业、已经会什么、在学什么、为什么学）、偏好（喜欢怎么被讲解）、强项、弱项、容易犯的错。" +
+          "不要记这一问的临时内容、书里的知识、你的猜测；拿不准就不记。一次一条，一句话，用第三人称「用户……」开头以外的写法，直接写事实，如「做了 3 年前端，在学 Rust」。" +
+          "画像里已经有一条说的是同一件事、但现在要更新或更正时，带上那一条的 id 改写它，不要另记一条。",
+        {
+          kind: z.enum(["background", "preference", "strength", "weakness", "misconception"]).describe("背景 / 偏好 / 强项 / 弱项 / 易错点"),
+          content: z.string().min(2).max(300).describe("要记的那句话"),
+          evidence: z.string().max(200).optional().describe("依据：用户说了什么、做了什么让你这么判断"),
+          id: z.number().int().optional().describe("要改写的那一条的编号（画像里每条前面的 #数字）"),
+        },
+        async ({ kind, content, evidence, id }) => {
+          if (!HOST_API) return text("（未连接应用，记不了）");
+          const out = (await hostFetch("/memory", { op: "remember", kind, content, evidence: evidence ?? "", id: id ?? null })) as { id: number };
+          return text(`记下了（#${out.id}）。用户可以在设置的「我的画像」里看到、修改或删除。不用特意告诉用户你记了什么，除非他问。`);
+        },
+      ),
+      tool(
+        "forget",
+        "从「我的画像」里删掉一条：用户说那条不对、不想被记住，或者它已经过时了。",
+        { id: z.number().int().describe("那一条的编号（画像里每条前面的 #数字）") },
+        async ({ id }) => {
+          if (!HOST_API) return text("（未连接应用）");
+          await hostFetch("/memory", { op: "forget", id });
+          return text("删掉了。");
+        },
+      ),
+      tool(
         "list_notes",
         "读取用户在阅读器里划的重点（高亮）和写的笔记，按书里的先后排。默认只取一本书的：这段对话关联的那本，" +
           "没有关联就取正开着的那本，两样都没有才是全部；要所有书的传 all: true。" +
@@ -915,6 +945,12 @@ const RULES = `你运行在一个叫 DocAgent 的桌面应用里，是用户的�
 - 书架上每本书的「⋯」里可以换封面、改名、设防剧透、移除。左下角齿轮是设置（模型、检索、技能与 MCP、数据）。
 - 用户没问到的事不要主动汇报（比如文件夹的 git 状态）。
 
+关于读者本人（提问开头如果带着「关于这位读者」，那就是「我的画像」里现有的内容，每条前面的 #数字 是编号）：
+- 你要像一个长期带他的老师那样认识他。对话里他透露了自己的背景、目标、偏好，或者你看出他在哪类问题上总是卡住、总是搞错，就用 remember 记下来。每次对话顶多记一两条真正有用的，宁缺毋滥。
+- 已经记着的不要重复记；说法变了或者原来记错了，用 id 改写；用户说不对、别记，就用 forget 删掉。
+- 讲解时照着画像来：按他的背景举例，照他的偏好安排先后，碰到他的易错点主动多说一句。不要把画像念给他听，也不要每次都说「我记下了」。
+- 用户问「你记得我什么」「你了解我吗」，就照画像如实说，并告诉他在设置的「我的画像」里可以改。
+
 做事方式：
 - 了解本地项目或目录时，优先用 Glob 找文件、Grep 搜内容、Read 读文件；Bash 留给确实要执行的事（每条命令用户都要点一次同意）。
 - 需要最新信息或文档库、本地都没有的资料时，用 WebSearch 联网搜索，用 WebFetch 打开具体网页；引用网页内容时给出链接。
@@ -991,7 +1027,7 @@ async function handleAsk(msg: {
     book,
     parts: book ? (book.parts ?? partsByBook.get(book.id)) : undefined,
     reading: readingOf(msg.reading),
-    profile: typeof msg.profile === "string" && msg.profile.trim() ? msg.profile.slice(0, 2000) : undefined,
+    profile: typeof msg.profile === "string" && msg.profile.trim() ? msg.profile.slice(0, 4000) : undefined,
     approvals: new Set(),
     decided: new Map(),
     ended: false,

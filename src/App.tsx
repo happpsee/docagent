@@ -56,8 +56,8 @@ export function App() {
     void api.learnOverviews().then((list) => setLearn(new Map(list.map((o) => [o.bookId, o]))), () => {});
     void api.learnerNotes().then((notes) => {
       profile.current = notes
-        .slice(0, 12)
-        .map((n) => `- ${PROFILE_KIND[n.kind] ?? n.kind}：${n.content}${n.concept ? `（关于「${n.concept}」）` : ""}`)
+        .slice(0, 30)
+        .map((n) => `- #${n.id} ${PROFILE_KIND[n.kind] ?? n.kind}：${n.content}${n.concept ? `（关于「${n.concept}」）` : ""}`)
         .join("\n");
     }, () => {});
   }, []);
@@ -323,6 +323,8 @@ export function App() {
           break;
         }
         case "result":
+          // 助手这一问里可能记下了关于用户的新东西：下一问要带上
+          refreshLearn();
           finish((m) => {
             const hasText = m.blocks?.some((b) => b.type === "text" && b.text.trim());
             return {

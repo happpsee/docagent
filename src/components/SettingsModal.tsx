@@ -556,7 +556,7 @@ function ProfileSection() {
   return (
     <div className="space-y-2">
       <p className="pb-1 text-[12px] leading-relaxed text-text-3">
-        助手每次回答前都会读一遍这里：你的背景、偏好，和答题时暴露出来的易错点。写得不准的直接改；它还没注意到的，也可以告诉它。只存在这台电脑上，提问时会随问题一起发给模型。
+        助手每次回答前都会读一遍这里。它会在对话里记下你的背景、偏好和容易卡住的地方，批改时记下你的易错点。写得不准的直接改或删；它还没注意到的，也可以告诉它。只存在这台电脑上，提问时会随问题一起发给模型。
       </p>
       {notes?.map((n) =>
         draft?.id === n.id ? (
@@ -575,7 +575,7 @@ function ProfileSection() {
             </div>
             {(n.auto || n.concept) && (
               <div className="mt-1 text-[11.5px] leading-relaxed text-text-4">
-                {n.auto ? "批改时记下的" : "你写的"}
+                {n.auto ? (n.concept ? "批改时记下的" : "助手在对话里记下的") : "你写的"}
                 {n.concept ? ` · 关于「${n.concept}」` : ""}
                 {n.evidence ? ` · 依据：${n.evidence}` : ""}
               </div>

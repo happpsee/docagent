@@ -46,6 +46,17 @@ struct AnnotationsReq {
     book_id: Option<String>,
 }
 
+/// 助手对「我的画像」的读写：list 列出来，remember 记一条（带 id 是改写那一条），forget 删一条
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MemoryReq {
+    op: String,
+    id: Option<i64>,
+    kind: Option<String>,
+    content: Option<String>,
+    evidence: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SaveReq {
@@ -86,6 +97,7 @@ pub fn start(conn: Arc<Mutex<Connection>>, save_dir: PathBuf) -> Result<LocalApi
                 (Method::Post, "/search") => handle_search(&conn, &body),
                 (Method::Post, "/save") => handle_save(&save_dir, &body),
                 (Method::Post, "/annotations") => handle_annotations(&conn, &body),
+                (Method::Post, "/memory") => handle_memory(&conn, &body),
                 (Method::Post, "/section") => handle_section(&conn, &body),
                 _ => Err(anyhow::anyhow!("未知接口")),
             };
@@ -125,6 +137,32 @@ fn handle_annotations(conn: &Arc<Mutex<Connection>>, body: &str) -> Result<serde
     let conn = conn.lock().map_err(|_| anyhow::anyhow!("数据库锁异常"))?;
     let list = db::list_annotations(&conn, req.doc_ids.as_deref(), req.book_id.as_deref())?;
     Ok(serde_json::json!({ "annotations": list }))
+}
+
+fn handle_memory(conn: &Arc<Mutex<Connection>>, body: &str) -> Result<serde_json::Value> {
+    let req: MemoryReq = serde_json::from_str(body)?;
+    let conn = conn.lock().map_err(|_| anyhow::anyhow!("数据库锁异常"))?;
+    match req.op.as_str() {
+        "list" => Ok(serde_json::json!({ "notes": crate::learn::notes(&conn)? })),
+        "remember" => {
+            let kind = req.kind.unwrap_or_default();
+            if !crate::learn::NOTE_KINDS.contains(&kind.as_str()) {
+                anyhow::bail!("kind 只能是 {} 之一", crate::learn::NOTE_KINDS.join(" / "));
+            }
+            let content: String = req.content.unwrap_or_default().trim().chars().take(300).collect();
+            if content.is_empty() {
+                anyhow::bail!("内容是空的");
+            }
+            let evidence: String = req.evidence.unwrap_or_default().trim().chars().take(200).collect();
+            let id = crate::learn::agent_note(&conn, req.id, &kind, &content, &evidence, db::now())?;
+            Ok(serde_json::json!({ "id": id }))
+        }
+        "forget" => {
+            crate::learn::delete_note(&conn, req.id.ok_or_else(|| anyhow::anyhow!("要给出编号"))?)?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        other => anyhow::bail!("不认识的操作：{other}"),
+    }
 }
 
 /// 保存到固定目录下，文件名去掉路径成分——agent 给的名字不能决定写到哪

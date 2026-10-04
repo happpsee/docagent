@@ -462,6 +462,10 @@ function describe(name: string, input: Record<string, unknown>): { label: string
       return { label: "保存文件", arg: String(input.filename ?? "") };
     case "list_notes":
       return { label: "读我的划线和笔记", arg: "" };
+    case "remember":
+      return { label: "记住了", arg: String(input.content ?? "") };
+    case "forget":
+      return { label: "从画像里删掉一条", arg: "" };
     case "read_section":
       return {
         label: "读原文",
