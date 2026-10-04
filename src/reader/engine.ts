@@ -26,8 +26,8 @@ h2 { font-size: 1.3em; margin: 1.6em 0 0.6em; }
 h3 { font-size: 1.1em; margin: 1.3em 0 0.4em; }
 p { margin: 0.75em 0; }
 li { margin: 0.3em 0; }
-table { border-collapse: collapse; margin: 1em 0; font-size: 0.92em; }
-td, th { border: 1px solid #8884; padding: 6px 12px; vertical-align: top; text-align: left; }
+table { border-collapse: collapse; margin: 1em 0; font-size: 0.92em; display: block; max-width: 100%; overflow-x: auto; }
+td, th { border: 1px solid #8884; padding: 6px 12px; vertical-align: top; text-align: left; word-break: normal; overflow-wrap: normal; min-width: 3em; }
 th { background: #8881; }
 blockquote { margin: 1em 0; padding-left: 1em; border-left: 3px solid #8885; opacity: 0.85; }
 pre { padding: 12px 14px; border-radius: 8px; background: #8882; overflow-x: auto; font-size: 0.88em; white-space: pre-wrap; }

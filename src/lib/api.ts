@@ -155,6 +155,9 @@ export const saveReadingState = (docId: string, location: string, fraction: numb
 export const xrayGet = (bookId: string) => invoke<XRay | null>("xray_get", { bookId }).then((x) => x ?? { units: [], total: 0 });
 /** 开始（或接着）透视；在后台跑，进度走 onXRayProgress */
 export const xrayBuild = (bookId: string) => invoke<void>("xray_build", { bookId });
+/** 前情提要。notes 是读过那些段的要点（没做过透视传空串，Rust 改用原文）；fresh 是不用存着的、重写 */
+export const recap = (bookId: string, docId: string, fraction: number, notes: string, fresh: boolean) =>
+  invoke<string>("recap", { bookId, docId, fraction, notes, fresh });
 export const xrayClear = (bookId: string) => invoke<void>("xray_clear", { bookId });
 export interface XRayProgress {
   bookId: string;

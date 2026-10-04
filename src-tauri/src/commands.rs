@@ -607,6 +607,58 @@ pub fn xray_build(
     Ok(())
 }
 
+/// 前情提要。notes 是界面挑好的「读过那些段的要点」（没做过透视就是空的，这里改用原文）；
+/// 同一个位置算过就直接给存着的，fresh 是要求重写
+#[tauri::command(async)]
+pub fn recap(
+    state: State<'_, AppState>,
+    book_id: String,
+    doc_id: String,
+    fraction: f64,
+    notes: String,
+    fresh: bool,
+) -> Result<String, String> {
+    let key = crate::recap::key(&doc_id, fraction, &notes);
+    let (provider, title, text): (Provider, String, String) = {
+        let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+        if !fresh {
+            if let Some(text) = crate::recap::cached(&conn, &book_id, &key).map_err(e)? {
+                return Ok(text);
+            }
+        }
+        let provider = db::get_setting(&conn, SETTINGS_KEY)
+            .map_err(e)?
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default();
+        let title: String = conn
+            .query_row("SELECT title FROM books WHERE id = ?1", [&book_id], |r| r.get(0))
+            .map_err(|err| err.to_string())?;
+        let text = if notes.trim().is_empty() {
+            crate::recap::text_before(&conn, &doc_id, fraction).map_err(e)?
+        } else {
+            String::new()
+        };
+        (provider, title, text)
+    };
+    if provider.api_key.is_empty() || provider.base_url.is_empty() || provider.model.is_empty() {
+        return Err("还没配置模型：请在设置里填接口地址、API Key 和模型名".to_string());
+    }
+    if notes.trim().is_empty() && text.trim().chars().count() < 200 {
+        return Err("读过的内容还太少，没什么可回顾的".to_string());
+    }
+    let out = crate::llm::complete(
+        &provider,
+        crate::recap::SYSTEM,
+        &crate::recap::prompt(&title, &notes, &text),
+        600,
+    )
+    .map_err(e)?;
+    let out = out.trim().to_string();
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    crate::recap::store(&conn, &book_id, &key, &out).map_err(e)?;
+    Ok(out)
+}
+
 #[tauri::command(async)]
 pub fn xray_clear(state: State<'_, AppState>, book_id: String) -> Result<(), String> {
     let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;

@@ -132,6 +132,11 @@ const xray = {
       entities: [
         { name: "年轻人", type: "人物", desc: "相机是他外婆留下的，外婆上个月去世了", quote: "外婆上个月走了" },
         { name: "底片", type: "物品", desc: "卷片轴里一卷没冲洗的胶片，要等三天", quote: "卷片轴里还留着一卷没冲洗的胶片" },
+        { name: "外婆", type: "人物", desc: "年轻人的外婆，相机的主人，上个月去世", quote: "外婆上个月走了" },
+      ],
+      relations: [
+        { from: "年轻人", to: "外婆", label: "外孙" },
+        { from: "年轻人", to: "老陈", label: "托他修相机" },
       ] },
     { docId: "d4", unit: 2, page: 3, start: 0.67, end: 1, title: "桥头的槐树", summary: "照片洗出来只有七张成像，都是一座石桥。最后一张背面写着“等你到槐花开”，老陈明白了小满是谁。",
       entities: [
@@ -180,6 +185,7 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
   if (cmd === "test_model") return 820 as T;
   if (cmd === "test_embedding") return 1024 as T;
   if (cmd === "list_sessions") return structuredClone(sessions) as T;
+  if (cmd === "recap") return "老陈守着一间相机修理店，雨夜里一个年轻人带来一台他三十年前卖出去的旧胶片机。相机是年轻人刚过世的外婆留下的，里面还有一卷没冲洗的底片，机身上刻着“赠予小满”。老陈答应三天后交照片——你停在他刚把底片取出来的地方。" as T;
   if (cmd === "xray_get") return (args?.bookId === "b4" ? xray : { units: [], total: 0 }) as T;
   if (cmd === "update_book") {
     const b = books.find((x) => x.id === args?.bookId);

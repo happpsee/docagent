@@ -301,7 +301,7 @@ export function App() {
               // 供应商没给流式片段时，最终文本补成一个块
               blocks: hasText ? m.blocks : [...(m.blocks ?? []), { type: "text", text: e.text }],
               hits: e.hits,
-              costUsd: e.costUsd,
+              tokens: e.tokens ?? null,
             };
           });
           break;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Eye, EyeOff, RefreshCw, ScanSearch } from "lucide-react";
+import { Eye, EyeOff, RefreshCw, ScanSearch, Waypoints } from "lucide-react";
 import * as api from "@/lib/api";
 import { canSee, type Boundary } from "@/lib/scope";
 import type { Book, XRay, XRayEntity, XRayUnit } from "@/lib/types";
@@ -122,6 +122,7 @@ export function XRayPanel(p: {
   onGoQuote: (quote: string, unit: XRayUnit) => void;
   /** 让助手基于某个人物继续聊 */
   onAskAbout: (name: string) => void;
+  onOpenGraph: () => void;
 }) {
   const [tab, setTab] = useState<"units" | "figures">("units");
   const [open, setOpen] = useState<string | null>(null);
@@ -177,6 +178,9 @@ export function XRayPanel(p: {
             </button>
           </div>
           <span className="flex-1" />
+          <button className={icon} title="关系图：把读过的人物和概念连成一张图" aria-label="关系图" disabled={!figures.length} onClick={p.onOpenGraph}>
+            <Waypoints className="h-3.5 w-3.5" />
+          </button>
           <button
             className={`${icon} ${spoilerFree ? "text-accent" : ""}`}
             title={spoilerFree ? "这本书的防剧透开着：只显示你读过的部分，助手也只用读过的部分。点击关掉" : "这本书的防剧透关着：显示全部。点击打开"}

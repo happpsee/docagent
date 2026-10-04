@@ -25,6 +25,7 @@ pub mod render;
 pub mod search;
 pub mod server;
 pub mod spoiler;
+pub mod recap;
 pub mod xray;
 
 use std::path::PathBuf;
@@ -90,6 +91,7 @@ pub fn run() {
             commands::xray_get,
             commands::xray_build,
             commands::xray_clear,
+            commands::recap,
             commands::read_file_bytes,
             commands::document_book,
             commands::document_source,

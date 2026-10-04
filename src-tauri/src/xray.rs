@@ -53,6 +53,16 @@ pub struct Entity {
     pub quote: String,
 }
 
+/// 两个人物 / 概念之间的一条关系，关系图里的一条线
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct Relation {
+    pub from: String,
+    pub to: String,
+    /// 几个字说清是什么关系：父子、雇佣、依赖、属于…
+    #[serde(default)]
+    pub label: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnitOut {
@@ -67,6 +77,7 @@ pub struct UnitOut {
     pub title: String,
     pub summary: String,
     pub entities: Vec<Entity>,
+    pub relations: Vec<Relation>,
 }
 
 #[derive(Debug, Serialize)]
@@ -93,6 +104,11 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             PRIMARY KEY (doc_id, unit)
         );",
     )?;
+    // 后来加的列：老库补上（已经有了会报重复，忽略）
+    let _ = conn.execute(
+        "ALTER TABLE xray_units ADD COLUMN relations TEXT NOT NULL DEFAULT '[]'",
+        [],
+    );
     Ok(())
 }
 
@@ -174,13 +190,14 @@ fn unit_text(conn: &Connection, doc_id: &str, unit: &Unit) -> Result<String> {
 /// 一本书做好的段：按篇在书里的先后，同一篇里按段的先后
 fn built(conn: &Connection, book_id: &str) -> Result<Vec<UnitOut>> {
     let mut stmt = conn.prepare(
-        "SELECT u.doc_id, u.unit, u.page, u.start, u.end, u.title, u.summary, u.entities
+        "SELECT u.doc_id, u.unit, u.page, u.start, u.end, u.title, u.summary, u.entities, u.relations
          FROM xray_units u JOIN docs d ON d.id = u.doc_id
          WHERE d.book_id = ?1
          ORDER BY d.position, d.created_at, d.rowid, u.unit",
     )?;
     let rows = stmt.query_map(params![book_id], |r| {
         let entities: String = r.get(7)?;
+        let relations: String = r.get(8)?;
         Ok(UnitOut {
             doc_id: r.get(0)?,
             unit: r.get(1)?,
@@ -190,6 +207,7 @@ fn built(conn: &Connection, book_id: &str) -> Result<Vec<UnitOut>> {
             title: r.get(5)?,
             summary: r.get(6)?,
             entities: serde_json::from_str(&entities).unwrap_or_default(),
+            relations: serde_json::from_str(&relations).unwrap_or_default(),
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
@@ -257,13 +275,15 @@ fn prompt(text: &str, known: &[String]) -> String {
          \u{20}\u{20}只留读者之后会想回头查的：人物优先，其次是反复出现或对情节、论证起关键作用的东西；\n\
          \u{20}\u{20}随手一提的日用品、家具、普通场景不要。每个包含：\n\
          \u{20}\u{20}name（最常用的称呼）、type（人物/地点/机构/概念/物品/条款 之一）、\n\
-         \u{20}\u{20}desc（一句话，说这一段里关于它的新信息）、quote（原文里一字不差的一小段，10 到 30 个字，能体现它）\n\n\
+         \u{20}\u{20}desc（一句话，说这一段里关于它的新信息）、quote（原文里一字不差的一小段，10 到 30 个字，能体现它）\n\
+         - relations：这一段里明确写到的、上面这些（或前文出现过的名字）两两之间的关系，最多 5 条，没有就给空数组。\n\
+         \u{20}\u{20}每条包含 from、to（都用 name 的写法）、label（6 个字以内，如 父子、上下级、依赖、属于、对立）；只写原文说了的，不要推测\n\n\
          {known}【原文】\n{text}"
     )
 }
 
 /// 把模型的回答整理成一条记录；字段缺了、类型不对都尽量救回来
-fn parse(text: &str) -> Result<(String, String, Vec<Entity>)> {
+fn parse(text: &str) -> Result<(String, String, Vec<Entity>, Vec<Relation>)> {
     let v = llm::json_object(text)?;
     let title = v["title"].as_str().unwrap_or("").trim().to_string();
     let summary = v["summary"].as_str().unwrap_or("").trim().to_string();
@@ -283,7 +303,22 @@ fn parse(text: &str) -> Result<(String, String, Vec<Entity>)> {
                 .collect()
         })
         .unwrap_or_default();
-    Ok((title, summary, entities))
+    let relations: Vec<Relation> = v["relations"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|r| serde_json::from_value::<Relation>(r.clone()).ok())
+                .map(|r| Relation {
+                    from: r.from.trim().to_string(),
+                    to: r.to.trim().to_string(),
+                    label: r.label.trim().chars().take(8).collect(),
+                })
+                .filter(|r| !r.from.is_empty() && !r.to.is_empty() && r.from != r.to)
+                .take(8)
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok((title, summary, entities, relations))
 }
 
 /// 进度。透视是按书做的，界面按 bookId 认是不是自己正开着的那本
@@ -495,12 +530,12 @@ fn run(
                 // 偶尔会返回一段解析不了的东西，或者接口抖一下：再试一次
                 let attempt = || complete(SYSTEM, &prompt(&text, &known)).and_then(|t| parse(&t));
                 let outcome = attempt().or_else(|_| attempt());
-                let saved = outcome.and_then(|(title, summary, entities)| {
+                let saved = outcome.and_then(|(title, summary, entities, relations)| {
                     let c = lock()?;
                     // 模型想的这段时间里这一篇也可能变了或没了：只在版本号还对得上时才存
                     let kept = c.execute(
-                        "INSERT OR REPLACE INTO xray_units(doc_id, unit, page, start, end, title, summary, entities)
-                         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+                        "INSERT OR REPLACE INTO xray_units(doc_id, unit, page, start, end, title, summary, entities, relations)
+                         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?10
                          WHERE EXISTS (SELECT 1 FROM docs WHERE id = ?1 AND rev = ?9)",
                         params![
                             job.doc_id,
@@ -511,7 +546,8 @@ fn run(
                             title,
                             summary,
                             serde_json::to_string(&entities)?,
-                            job.rev
+                            job.rev,
+                            serde_json::to_string(&relations)?
                         ],
                     )?;
                     if kept == 0 {

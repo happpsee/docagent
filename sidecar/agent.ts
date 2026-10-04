@@ -33,7 +33,7 @@
  *   → {type:"reader_action", id, callId, action, docId, quote, page, note?, color?}   让界面在阅读器里划线 / 跳转
  *        action："highlight" | "goto"。docId：要操作的那一篇，已经解析好，不一定是正开着的（没开着界面要先打开）；
  *        page：到哪一页 / 哪一节去找 quote 的提示，没有是 null；goto 不带 quote 时就是翻到这一页，两个都没有是翻到这一篇的开头
- *   → {type:"result", id, text, sessionId, costUsd, turns, hits}
+ *   → {type:"result", id, text, sessionId, tokens, turns, hits}
  *   → {type:"extensions", user, project}             各含 dir、skills[]、mcp[]
  *   → {type:"error", id?, message}
  */
@@ -906,6 +906,12 @@ const RULES = `你运行在一个叫 DocAgent 的桌面应用里，是用户的�
 - 开了防剧透的书，用户没读到的部分搜不到也读不出来（read_section 会说还没读到那里）；不要拿自己的知识去补后面的内容。
 - 说明里没有「正在阅读器里看」，就是用户现在没开着书，不要假设；这时 read_section 用不了，highlight 和 show_in_reader 要带 ref。
 
+关于这个应用本身（用户问「怎么改」「在哪看」时，先说应用里现成的办法，不要让用户去开别的编辑器或敲命令）：
+- 改原文：Markdown 和纯文本的篇，阅读器右上角有铅笔按钮「编辑原文」，改完保存会写回原文件并重新索引。用户让你替他改时，用 Edit 改那个文件（路径用 read_section 的结果或先 Glob 找），改完告诉他改了哪里。其它格式（PDF、EPUB、Word）应用里改不了。
+- 阅读器左上角：目录、透视（全书要点、人物与概念）、笔记、书签、搜索；右上角：一键动作、书签、排版。选中文字会弹出划线、写笔记、问助手。
+- 书架上每本书的「⋯」里可以换封面、改名、设防剧透、移除。左下角齿轮是设置（模型、检索、技能与 MCP、数据）。
+- 用户没问到的事不要主动汇报（比如文件夹的 git 状态）。
+
 做事方式：
 - 了解本地项目或目录时，优先用 Glob 找文件、Grep 搜内容、Read 读文件；Bash 留给确实要执行的事（每条命令用户都要点一次同意）。
 - 需要最新信息或文档库、本地都没有的资料时，用 WebSearch 联网搜索，用 WebFetch 打开具体网页；引用网页内容时给出链接。
@@ -1105,7 +1111,10 @@ async function handleAsk(msg: {
           id,
           text: m.result ?? answer,
           sessionId: m.session_id ?? session,
-          costUsd: m.total_cost_usd ?? null,
+          costUsd: null,
+          tokens: m.usage
+            ? (m.usage.input_tokens ?? 0) + (m.usage.cache_read_input_tokens ?? 0) + (m.usage.cache_creation_input_tokens ?? 0) + (m.usage.output_tokens ?? 0)
+            : null,
           turns: m.num_turns ?? null,
           hits: ask.hits,
         });

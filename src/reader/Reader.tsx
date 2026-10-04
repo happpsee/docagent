@@ -1,3 +1,7 @@
+import type { XRayUnit } from "@/lib/types";
+import { colorCode } from "./codeColor";
+import { GraphView } from "./Graph";
+import { RECAP_AFTER_MS, RecapCard, recapNotes } from "./Recap";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   X,
@@ -100,9 +104,16 @@ export type Panel = "toc" | "xray" | "notes" | "bookmarks" | "search";
 /** 一键动作：不用想怎么问，点一下就把这句话连同当前位置交给助手 */
 const QUICK: { name: string; prompt: string }[] = [
   { name: "总结这一章", prompt: "总结我正在读的这一章：先用三句话说清讲了什么，再列出三到五个要点。" },
+  { name: "出几道题考考我", prompt: "根据我正在读的这一章出三道题考我，先只出题，等我回答后再讲解。" },
+];
+/** 故事类的书（默认开防剧透的那些）问人物和伏笔；资料、文档问概念和上下文 */
+const QUICK_STORY: typeof QUICK = [
   { name: "梳理人物关系", prompt: "梳理到我读到的位置为止出现过的人物：每个人是谁、彼此是什么关系。不要提我还没读到的内容。" },
   { name: "这一章和前面的呼应", prompt: "我正在读的这一章，和前面的内容有哪些呼应、伏笔或者矛盾？指出具体的地方。" },
-  { name: "出几道题考考我", prompt: "根据我正在读的这一章出三道题考我，先只出题，等我回答后再讲解。" },
+];
+const QUICK_DOC: typeof QUICK = [
+  { name: "梳理关键概念", prompt: "梳理我正在读的这一章里的关键概念：每个是什么意思、彼此是什么关系。" },
+  { name: "和其它篇的关联", prompt: "我正在读的这一章，和这本书其它部分有哪些关联、重复或者矛盾？指出具体的地方。" },
 ];
 const PREFS_KEY = "reader";
 const NOTE_PREFIX = "foliate-note:";
@@ -155,6 +166,11 @@ export function Reader({
   const sectionOf = useRef(new Map<string, number>());
   const footnoteView = useRef<FoliateView | null>(null);
   const [showQuick, setShowQuick] = useState(false);
+  const [showGraph, setShowGraph] = useState(false);
+  /** 前情提要：隔了一阵再打开读到一半的书，自己弹出来；也可以从一键动作里叫 */
+  const [showRecap, setShowRecap] = useState(
+    () => doc.readAt != null && Date.now() - doc.readAt * 1000 > RECAP_AFTER_MS && (doc.progress ?? 0) > 0.03 && (doc.progress ?? 0) < 0.97,
+  );
   /** 编辑原文（只有 Markdown 和文本能改）：null 是没在编辑 */
   const [draft, setDraft] = useState<string | null>(null);
   const [savingDraft, setSavingDraft] = useState(false);
@@ -359,6 +375,7 @@ export function Reader({
             setShowPrefs(false);
           });
           d.addEventListener("keydown", onKey);
+          if (!v.isFixedLayout) colorCode(d);
           // 翻页模式下滚轮也能翻页（有节流，触控板一次滑动只翻一页）
           let lastTurn = 0;
           d.addEventListener(
@@ -848,7 +865,26 @@ export function Reader({
   );
   /** 此刻在第几页 / 第几节（没有页码的格式是 null） */
   const livePage = (fixed || doc.kind === "epub") && loc?.section ? loc.section.current + 1 : null;
-  const figures = useMemo(() => figuresOf(visibleUnits(xray, bounds)), [xray, bounds]);
+  const seenUnits = useMemo(() => visibleUnits(xray, bounds), [xray, bounds]);
+  const figures = useMemo(() => figuresOf(seenUnits), [seenUnits]);
+  /** 前情提要的材料：不管这本书开没开防剧透，都只用读过的那些段 */
+  const recapSource = useMemo(
+    () => recapNotes(book, visibleUnits(xray, readBoundaries({ ...book, spoilerFree: true }, { docId: doc.id, fraction: seen.fraction, page: seen.page }))),
+    [book, xray, doc.id, seen],
+  );
+  const goQuote = (quote: string, u: XRayUnit) => {
+    // 带上这一段的位置：引文对不上原文（模型没照抄）时，至少翻到这一段
+    if (u.docId !== doc.id) return onOpenPart(u.docId, { quote, page: u.page, fraction: u.start });
+    const v = viewRef.current;
+    if (v) {
+      void showCitation(v, { docId: doc.id, quote, page: u.page, fraction: u.start, nonce: Date.now() }).catch((err) => onError(String(err)));
+    }
+  };
+  const askAbout = (name: string) =>
+    onAsk(
+      `讲讲「${name}」到我读到的位置为止的来龙去脉：出现在哪些地方、做了什么、和别人是什么关系。不要提我还没读到的内容。`,
+      `「${name}」的来龙去脉`,
+    );
 
   /** 面板里列的标记：整本书的，按篇的先后排；当前这一篇的用最新的本地状态 */
   const partOf = useMemo(() => new Map(book.docs.map((d) => [d.id, d])), [book.docs]);
@@ -1030,22 +1066,9 @@ export function Reader({
                     if (!v) return;
                     void (u.page ? v.goTo(u.page - 1) : v.goToFraction(u.start)).catch((err: unknown) => onError(String(err)));
                   }}
-                  onGoQuote={(quote, u) => {
-                    // 带上这一段的位置：引文对不上原文（模型没照抄）时，至少翻到这一段
-                    if (u.docId !== doc.id) return onOpenPart(u.docId, { quote, page: u.page, fraction: u.start });
-                    const v = viewRef.current;
-                    if (v) {
-                      void showCitation(v, { docId: doc.id, quote, page: u.page, fraction: u.start, nonce: Date.now() }).catch((err) =>
-                        onError(String(err)),
-                      );
-                    }
-                  }}
-                  onAskAbout={(name) =>
-                    onAsk(
-                      `讲讲「${name}」到我读到的位置为止的来龙去脉：出现在哪些地方、做了什么、和别人是什么关系。不要提我还没读到的内容。`,
-                      `「${name}」的来龙去脉`,
-                    )
-                  }
+                  onGoQuote={goQuote}
+                  onAskAbout={askAbout}
+                  onOpenGraph={() => setShowGraph(true)}
                 />
               )}
               {panel === "notes" && (
@@ -1085,6 +1108,9 @@ export function Reader({
 
         <div className="relative min-w-0 flex-1" style={{ background: fixed ? undefined : theme.bg }}>
           <div ref={stage} className={`reader-stage absolute inset-0 ${fixed ? "reader-fixed" : ""}`} />
+          {showRecap && draft == null && (
+            <RecapCard book={book} docId={doc.id} fraction={loc?.fraction ?? doc.progress ?? 0} notes={recapSource} onClose={() => setShowRecap(false)} />
+          )}
           {draft != null && (
             <div className="absolute inset-0 z-20 flex flex-col bg-bg">
               <div className="flex items-center gap-2 border-b border-hairline-soft px-4 py-1.5 text-[12px] text-text-3">
@@ -1205,13 +1231,34 @@ export function Reader({
         <span className="num w-9 shrink-0 text-right">{percent}%</span>
       </footer>
 
+      {showGraph && (
+        <GraphView
+          units={seenUnits}
+          figures={figures}
+          hidden={xray.units.length - seenUnits.length}
+          onClose={() => setShowGraph(false)}
+          onGoQuote={goQuote}
+          onAskAbout={askAbout}
+        />
+      )}
+
       {showQuick && (
         <div
           data-floating
           className="absolute right-[84px] top-11 z-30 w-[190px] rounded-xl border border-hairline-strong bg-surface-2 p-1 shadow-[0_10px_32px_-8px_rgb(0_0_0/0.3)]"
           role="menu"
         >
-          {QUICK.map((q) => (
+          <button
+            role="menuitem"
+            className="block w-full rounded-lg px-2.5 py-1.5 text-left text-[13px] text-text-2 hover:bg-nav-card hover:text-text"
+            onClick={() => {
+              setShowQuick(false);
+              setShowRecap(true);
+            }}
+          >
+            前情提要
+          </button>
+          {[QUICK[0], ...(book.spoilerFree ? QUICK_STORY : QUICK_DOC), QUICK[1]].map((q) => (
             <button
               key={q.name}
               role="menuitem"

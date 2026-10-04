@@ -115,6 +115,8 @@ export interface XRayUnit {
   title: string;
   summary: string;
   entities: XRayEntity[];
+  /** 这一段里原文写明的关系；老的透视数据没有这一项 */
+  relations?: { from: string; to: string; label: string }[];
 }
 export interface XRay {
   units: XRayUnit[];
@@ -231,6 +233,8 @@ export interface Message {
   blocks?: Block[];
   hits?: Hit[];
   costUsd?: number | null;
+  /** 这一问进出模型的 token 总数。不显示金额：各家价格不一样，SDK 算出来的是按 Anthropic 的价 */
+  tokens?: number | null;
   durationMs?: number;
   pending?: boolean;
   error?: boolean;
@@ -319,7 +323,7 @@ export type AgentEvent =
       canRemember?: boolean; rememberLabel?: string;
     }
   | ({ type: "reader_action"; id: string } & ReaderCommand)
-  | { type: "result"; id: string; text: string; sessionId: string | null; costUsd: number | null; turns: number | null; hits: Hit[] }
+  | { type: "result"; id: string; text: string; sessionId: string | null; costUsd: number | null; tokens?: number | null; turns: number | null; hits: Hit[] }
   | { type: "error"; id?: string; message: string; hits?: Hit[]; sessionId?: string | null };
 
 /** 助手让阅读器做的事：在书里划线，或者翻到某一处 */

@@ -357,7 +357,7 @@ export function Cover({ book, className = "" }: { book: Book; className?: string
     </span>
   );
   return (
-    <div className={`relative shrink-0 ${className}`}>
+    <div className={`relative shrink-0 select-none ${className}`}>
       {url ? (
         <div className={`relative h-full w-full ${face}`}>
           <img src={url} alt="" className="h-full w-full object-cover" />
