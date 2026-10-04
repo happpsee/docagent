@@ -133,6 +133,58 @@ pub fn gen_prompt(text: &str, concepts: &[String]) -> String {
     )
 }
 
+/// 复习时换个问法：同一个概念、同一段原文，避开已经问过的角度，只出一道
+pub fn variant_prompt(text: &str, concept: &str, asked: &[String]) -> String {
+    let asked: String = asked.iter().map(|q| format!("- {q}\n")).collect();
+    format!(
+        "读者在复习「{concept}」。下面是讲到它的那一段原文。再出 1 道简答题考他对「{concept}」的理解。\n\
+         之前已经问过这些，换一个角度，不要只是改写措辞：\n{asked}\
+         要求：\n\
+         - concept 就写「{concept}」；\n\
+         - 可以换成让他举例、比较、说出反例、解释后果、用自己的话讲给外行听；不要出选择题、判断题；\n\
+         - 只凭这一段的内容就能答出来；\n\
+         - rubric：2 到 4 条评分要点，每条一句话；\n\
+         - evidence：原文里一字不差的连续一句（15 到 60 个字），是答案的依据。\n\
+         输出：{{\"items\":[{{\"concept\":\"…\",\"question\":\"…\",\"rubric\":[\"…\"],\"evidence\":\"…\"}}]}}\n\n\
+         【原文】\n{text}"
+    )
+}
+
+/// 一个概念攒了这么多道题就不再出新的，在已有的里轮着问
+pub const MAX_PER_CONCEPT: usize = 5;
+
+/// 这个概念的所有题，按出题先后
+pub fn items_for_concept(conn: &Connection, book_id: &str, concept: &str) -> Result<Vec<Item>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ITEM_COLUMNS} FROM quiz_items WHERE book_id = ?1 AND concept = ?2 ORDER BY id"
+    ))?;
+    let rows = stmt.query_map(params![book_id, concept], item_row)?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// 这道题答过没有
+pub fn answered(conn: &Connection, item_id: i64) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM quiz_reviews WHERE item_id = ?1)",
+        params![item_id],
+        |r| r.get(0),
+    )?)
+}
+
+/// 已有的题里最久没问过的那道（没问过的排最前）
+pub fn stalest(conn: &Connection, book_id: &str, concept: &str) -> Result<Option<Item>> {
+    Ok(conn
+        .query_row(
+            &format!(
+                "SELECT {ITEM_COLUMNS} FROM quiz_items q WHERE book_id = ?1 AND concept = ?2
+                 ORDER BY COALESCE((SELECT MAX(at) FROM quiz_reviews WHERE item_id = q.id), 0), id LIMIT 1"
+            ),
+            params![book_id, concept],
+            item_row,
+        )
+        .optional()?)
+}
+
 /// 去掉所有空白再比：模型抄原文时常把换行、空格弄丢
 fn squash(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
@@ -562,6 +614,15 @@ mod tests {
         assert_eq!(later.due, 1);
         assert!(later.learned < o.learned);
         assert_eq!(due_items(&conn, Some("b"), due1 + day, 10).unwrap(), vec![item.clone()]);
+
+
+        // 这道题答过了；同一个概念再加一道没答过的，轮换时先挑它
+        log_review(&conn, &item, "没有 id", &Verdict { grade: Grade::Recalled, missing: vec![], feedback: String::new() }, t0).unwrap();
+        assert!(answered(&conn, item.id).unwrap());
+        let other = NewItem { concept: "通知".into(), question: "举个通知的例子".into(), rubric: vec!["不要响应".into()], evidence: "服务端收到后不会回任何东西".into() };
+        save_items(&conn, "b", "d", 0, &[other], 200).unwrap();
+        assert_eq!(stalest(&conn, "b", "通知").unwrap().unwrap().question, "举个通知的例子");
+        assert_eq!(items_for_concept(&conn, "b", "通知").unwrap().len(), 2);
 
         // 再答对一次，间隔比第一次长
         let due2 = apply(&conn, "b", "通知", Grade::Recalled, due1).unwrap();

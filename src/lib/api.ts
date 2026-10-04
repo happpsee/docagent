@@ -166,6 +166,8 @@ export const quizUnits = (docId: string) => invoke<QuizUnit[]>("quiz_units", { d
 export const quizUnit = (bookId: string, docId: string, unit: number) => invoke<QuizItem[]>("quiz_unit", { bookId, docId, unit });
 /** 交回答；空串是「不会」 */
 export const quizAnswer = (itemId: number, answer: string) => invoke<QuizResult>("quiz_answer", { itemId, answer });
+/** 复习时换个问法：答过的题换成同一个概念的另一道（现出或轮换），没答过的原样返回 */
+export const quizVariant = (itemId: number) => invoke<QuizItem>("quiz_variant", { itemId });
 export const quizDue = (bookId: string | null) => invoke<QuizItem[]>("quiz_due", { bookId });
 export const learnOverviews = () => invoke<LearnOverview[] | null>("learn_overviews").then((x) => x ?? []);
 

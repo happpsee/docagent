@@ -193,7 +193,7 @@ export function ChatPanel(p: Props) {
             >
               <span className="text-accent">✳</span>
               <span className="min-w-0 truncate">
-                {p.compact ? `就${p.openBook ? `《${p.openBook.title}》` : "这本书"}问点什么？` : `${hello}，想了解点什么？`}
+                {p.compact ? `${p.openBook ? `《${p.openBook.title}》` : "这本书"}哪里没看懂？` : `${hello}，今天学点什么？`}
               </span>
             </h1>
             <div className="mt-7">{composer}</div>

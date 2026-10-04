@@ -45,7 +45,7 @@ export function App() {
   /** 每本书学得怎么样（只有考过题的书）；答完一题、打开应用时取 */
   const [learn, setLearn] = useState<Map<string, LearnOverview>>(new Map());
   /** 正在进行的一轮问答：读完一段的题，或者到期的复习。key 换了就是新的一轮 */
-  const [quiz, setQuiz] = useState<{ key: number; title: string; load: () => Promise<QuizItem[]> } | null>(null);
+  const [quiz, setQuiz] = useState<{ key: number; title: string; fresh?: boolean; load: () => Promise<QuizItem[]> } | null>(null);
   const refreshLearn = useCallback(() => {
     void api.learnOverviews().then((list) => setLearn(new Map(list.map((o) => [o.bookId, o]))), () => {});
   }, []);
@@ -953,7 +953,7 @@ export function App() {
             }}
             onReview={() => {
               const { id: bookId } = readingBook;
-              setQuiz({ key: Date.now(), title: "复习", load: () => api.quizDue(bookId) });
+              setQuiz({ key: Date.now(), title: "复习", fresh: true, load: () => api.quizDue(bookId) });
             }}
           />
         )}
@@ -968,7 +968,7 @@ export function App() {
             onReveal={reveal}
             onRemove={setRemoving}
             learn={learn}
-            onReview={(bookId) => setQuiz({ key: Date.now(), title: "复习", load: () => api.quizDue(bookId) })}
+            onReview={(bookId) => setQuiz({ key: Date.now(), title: "复习", fresh: true, load: () => api.quizDue(bookId) })}
           />
         )}
         <div
@@ -1061,6 +1061,23 @@ export function App() {
           bookTitle={(id) => books.find((b) => b.id === id)?.title ?? ""}
           onShowSource={(item) => openDoc(item.docId, null, item.evidence)}
           onAnswered={refreshLearn}
+          fresh={quiz.fresh}
+          onExplain={(item, answer, result) => {
+            const book = books.find((b) => b.id === item.bookId);
+            if (!book) return;
+            askAboutBook(
+              book,
+              [
+                `我刚答了一道关于「${item.concept}」的题，没答好，帮我把没弄懂的地方讲清楚。`,
+                `题目：${item.question}`,
+                `我的回答：${answer.trim() || "（不会）"}`,
+                `没答到的要点：${result.missing.join("；") || "（批改没有列出）"}`,
+                `原文依据：“${item.evidence}”`,
+                "先指出我的理解偏在哪儿，再结合原文把没答到的要点讲明白，最后给一个例子或类比帮我记住。不要重新出题。",
+              ].join("\n"),
+              `讲讲「${item.concept}」`,
+            );
+          }}
           onClose={() => setQuiz(null)}
         />
       )}

@@ -74,7 +74,7 @@ export function Composer(p: Props) {
         autoFocus={p.autoFocus}
         disabled={!p.ready}
         aria-label="输入消息"
-        placeholder={!p.ready ? "先在左下角配置模型" : p.quote ? "就这段话问点什么…" : "问点什么，或者让我帮你整理资料…"}
+        placeholder={!p.ready ? "先在左下角配置模型" : p.quote ? "就这段话问点什么…" : "哪里没看懂，问我…"}
         onChange={(e) => p.onChange(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {

@@ -99,10 +99,13 @@ export function Library(p: Props) {
     return (
       <section className="grid min-w-0 flex-1 place-items-center px-8">
         <div className="max-w-[420px] text-center">
-          <div className="display-serif text-[26px] text-text">书架还是空的</div>
+          <div className="display-serif text-[26px] text-text">读完，真的学会</div>
           <p className="mt-3 text-[14px] leading-relaxed text-text-3">
-            把书、文档或者整个文件夹拖进窗口，或者点下面的按钮。一个文件夹可以当成一本书，里面的文件是它的各篇。
-            支持 PDF、EPUB、MOBI、FB2、漫画包、Word、Markdown 和文本。
+            把要学的书、文档或者整个文件夹拖进来。读完一段，助手会考你几道题，对照原文批改；
+            每个概念掌握得怎么样它都记着，快忘的时候提醒你复习。
+            <span className="mt-2 block text-[12.5px] text-text-4">
+              一个文件夹可以当成一本书。支持 PDF、EPUB、MOBI、FB2、Word、Markdown 和文本。
+            </span>
           </p>
           <div className="relative mt-5 inline-block">
             <button

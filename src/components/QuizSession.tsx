@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, Check, GraduationCap, Loader2, X } from "lucide-react";
+import { BookOpen, Check, GraduationCap, Loader2, MessageCircleQuestion, X } from "lucide-react";
 import * as api from "@/lib/api";
 import type { QuizItem, QuizResult } from "@/lib/types";
 
@@ -25,12 +25,16 @@ export function QuizSession(p: {
   title: string;
   /** 取这一轮的题（读完一段是现出的，要等模型；复习是存着的） */
   load: () => Promise<QuizItem[]>;
+  /** 复习：答过的题换个问法再考（每题要等模型现出，出不来就用原题） */
+  fresh?: boolean;
   /** 靠右留多少（阅读时右边有对话栏） */
   right: number;
   bookTitle: (bookId: string) => string;
   onShowSource: (item: QuizItem) => void;
   /** 批改完一题：掌握度变了 */
   onAnswered: () => void;
+  /** 没答好：让助手针对没答到的地方讲一讲 */
+  onExplain: (item: QuizItem, answer: string, result: QuizResult) => void;
   onClose: () => void;
 }) {
   const [items, setItems] = useState<QuizItem[] | null>(null);
@@ -39,12 +43,27 @@ export function QuizSession(p: {
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState<(QuizResult | undefined)[]>([]);
+  /** 还在换问法的那几题（按序号） */
+  const [swapping, setSwapping] = useState<Set<number>>(new Set());
   const box = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     let dead = false;
     p.load().then(
-      (list) => !dead && setItems(list),
+      (list) => {
+        if (dead) return;
+        setItems(list);
+        if (!p.fresh) return;
+        setSwapping(new Set(list.map((_, i) => i)));
+        list.forEach((old, i) => {
+          const settle = (next: QuizItem) => {
+            if (dead) return;
+            setItems((cur) => cur && cur.map((x, j) => (j === i ? next : x)));
+            setSwapping((cur) => new Set([...cur].filter((j) => j !== i)));
+          };
+          api.quizVariant(old.id).then(settle, () => settle(old));
+        });
+      },
       (err) => !dead && setError(String(err)),
     );
     return () => {
@@ -56,7 +75,8 @@ export function QuizSession(p: {
     box.current?.focus();
   }, [at, items]);
 
-  const item = items?.[at];
+  const waiting = swapping.has(at);
+  const item = waiting ? undefined : items?.[at];
   const result = results[at];
   const finished = items != null && at >= items.length;
 
@@ -108,6 +128,12 @@ export function QuizSession(p: {
           <div className="flex items-center gap-2 py-6 text-[12.5px] text-text-3">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             正在根据这一段出题…
+          </div>
+        )}
+        {waiting && (
+          <div className="flex items-center gap-2 py-6 text-[12.5px] text-text-3">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            换个问法再考你…
           </div>
         )}
         {items && !items.length && <p className="py-6 text-[12.5px] text-text-3">现在没有该复习的。</p>}
@@ -178,7 +204,15 @@ export function QuizSession(p: {
                   </span>
                   <span className="display-serif mt-0.5 block text-[13px] leading-relaxed text-text-2">“{item.evidence}”</span>
                 </button>
-                <div className="mt-3 flex justify-end">
+                <div className="mt-3 flex items-center justify-between">
+                  {result.grade !== "recalled" ? (
+                    <button className="inline-flex items-center gap-1 text-[12.5px] text-accent hover:underline" onClick={() => p.onExplain(item, answer, result)}>
+                      <MessageCircleQuestion className="h-3.5 w-3.5" />
+                      让助手讲讲我没答到的
+                    </button>
+                  ) : (
+                    <span />
+                  )}
                   <button
                     className="rounded-lg bg-accent px-3.5 py-1.5 text-[13px] text-white hover:bg-accent-2"
                     onClick={() => {

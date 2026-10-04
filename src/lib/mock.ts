@@ -193,6 +193,7 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
   if (cmd === "quiz_units")
     return (args?.docId === "d4" ? xray.units.map((u, i) => ({ unit: u.unit, page: u.page, start: u.start, end: u.end, quizzed: i === 0 })) : []) as T;
   if (cmd === "quiz_unit" || cmd === "quiz_due") return quizItems as T;
+  if (cmd === "quiz_variant") return (quizItems.find((i) => i.id === args?.itemId) ?? quizItems[0]) as T;
   if (cmd === "quiz_answer")
     return { grade: "partial", missing: ["三十年前是老陈亲手卖出去的"], feedback: "认出相机这一点说对了，但没说到它是老陈自己卖出去的——这才是他愣住的原因。", due: Date.now() / 1000 + 86400 } as T;
   if (cmd === "learn_overviews")

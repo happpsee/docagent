@@ -767,6 +767,60 @@ pub fn quiz_answer(
     })
 }
 
+/// 复习时换个问法：这道题答过了，就给同一个概念另一道——没攒够就现出一道新的，攒够了在已有的里轮着问。
+/// 没答过的原样返回。出不成新题不算错，退回原题
+#[tauri::command(async)]
+pub fn quiz_variant(state: State<'_, AppState>, item_id: i64) -> Result<crate::learn::Item, String> {
+    let (item, text, asked) = {
+        let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+        let item = crate::learn::item(&conn, item_id).map_err(e)?.ok_or("这道题不在了")?;
+        if !crate::learn::answered(&conn, item_id).map_err(e)? {
+            return Ok(item);
+        }
+        let all = crate::learn::items_for_concept(&conn, &item.book_id, &item.concept).map_err(e)?;
+        if all.len() >= crate::learn::MAX_PER_CONCEPT {
+            return Ok(crate::learn::stalest(&conn, &item.book_id, &item.concept)
+                .map_err(e)?
+                .unwrap_or(item));
+        }
+        let text = crate::books::part(&conn, &item.doc_id)
+            .ok()
+            .flatten()
+            .and_then(|part| crate::xray::plan(&conn, &item.doc_id, &part.kind).ok())
+            .and_then(|plan| plan.into_iter().find(|u| u.index == item.unit))
+            .and_then(|u| crate::xray::unit_text(&conn, &item.doc_id, &u).ok())
+            .unwrap_or_default();
+        // 原文变了（重新导入后分段不一样了）：依据都对不上，就别出新题了
+        if !text.split_whitespace().collect::<String>().contains(&item.evidence.split_whitespace().collect::<String>()) {
+            return Ok(item);
+        }
+        let asked: Vec<String> = all.into_iter().map(|i| i.question).collect();
+        (item, text, asked)
+    };
+    let Ok(provider) = provider_of(&state) else {
+        return Ok(item);
+    };
+    let fresh = crate::llm::complete(
+        &provider,
+        crate::learn::GEN_SYSTEM,
+        &crate::learn::variant_prompt(&text, &item.concept, &asked),
+        800,
+    )
+    .and_then(|reply| crate::learn::parse_items(&reply, &text));
+    let Ok(mut fresh) = fresh else {
+        return Ok(item);
+    };
+    fresh.truncate(1);
+    // 概念名以原来的为准：模型换了个写法的话，掌握度就记到另一个点上去了
+    fresh[0].concept = item.concept.clone();
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    crate::learn::save_items(&conn, &item.book_id, &item.doc_id, item.unit, &fresh, db::now()).map_err(e)?;
+    Ok(crate::learn::items_for_concept(&conn, &item.book_id, &item.concept)
+        .map_err(e)?
+        .pop()
+        .unwrap_or(item))
+}
+
 /// 现在该复习的题；book_id 为空是所有书的
 #[tauri::command(async)]
 pub fn quiz_due(

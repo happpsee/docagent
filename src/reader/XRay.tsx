@@ -148,7 +148,7 @@ export function XRayPanel(p: {
         <div className="display-serif mt-3 text-[16px] text-text">透视这本书</div>
         <p className="mt-2 text-[12.5px] leading-relaxed text-text-3">
           让助手把{multi ? `这本书的 ${p.book.docs.length} 篇` : "全书"}读一遍，给每一部分留下要点，把人物和概念整理成卡片。
-          之后读到哪里忘了“这是谁”“前面讲了什么”，在这里一眼就能找回来，每一条都能点回原文。
+          之后读到哪里忘了“这是什么”“前面讲了什么”，在这里一眼就能找回来；考过题以后，关系图会按你掌握的程度上色。
         </p>
         <p className="mt-2 text-[12px] leading-relaxed text-text-4">
           {spoilerFree ? "这本书开着防剧透：只显示你读过的部分。" : "这本书没开防剧透：做完就能看到全部。"}

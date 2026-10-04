@@ -97,6 +97,7 @@ pub fn run() {
             commands::quiz_unit,
             commands::quiz_answer,
             commands::quiz_due,
+            commands::quiz_variant,
             commands::learn_overview,
             commands::learn_overviews,
             commands::read_file_bytes,
