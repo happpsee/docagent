@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FilePlus2, FolderPlus, MessageSquare, MoreHorizontal, Plus, Search, GraduationCap } from "lucide-react";
+import { FilePlus2, FolderPlus, MoreHorizontal, Plus, Search, GraduationCap } from "lucide-react";
 import * as api from "@/lib/api";
 import type { Book, LearnOverview } from "@/lib/types";
 
@@ -210,38 +210,34 @@ export function Library(p: Props) {
         )}
 
         <h2 className="mt-9 text-[12px] font-medium text-text-3">{query ? `找到 ${shown.length} 本` : "全部"}</h2>
-        <div className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-x-5 gap-y-7">
+        <div className="mt-3 grid grid-cols-[repeat(auto-fill,108px)] gap-x-6 gap-y-6">
           {shown.map(({ book: b, part }) => (
             <div key={b.id} className="group relative" onContextMenu={contextMenu(b)}>
               <button onClick={() => p.onOpen(b, part?.id)} className="block w-full text-left" title={b.title}>
                 <Cover
                   book={b}
-                  className="aspect-[5/7] w-full transition-transform duration-200 group-hover:-translate-y-0.5 group-hover:shadow-[0_10px_24px_-10px_rgb(0_0_0/0.35)]"
+                  className="aspect-[5/7] w-full text-[13px] transition-transform duration-200 group-hover:-translate-y-0.5 group-hover:shadow-[0_10px_24px_-10px_rgb(0_0_0/0.35)]"
                 />
-                <div className="mt-2 line-clamp-2 text-[13px] leading-snug text-text">{b.title}</div>
+                <div className="mt-2 truncate text-[13px] leading-snug text-text">{b.title}</div>
               </button>
               <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-text-4">
-                <span className="min-w-0 truncate">{part ? `含：${part.name}` : subtitle(b)}</span>
-                <span className="flex-1" />
-                {b.sessionCount > 0 && (
-                  <button
-                    className="inline-flex shrink-0 items-center gap-0.5 hover:text-text"
-                    title={`${b.sessionCount} 个对话`}
-                    aria-label={`${b.sessionCount} 个对话`}
-                    onClick={() => p.onInfo(b)}
-                  >
-                    <MessageSquare className="h-3 w-3" />
-                    <span className="num">{b.sessionCount}</span>
-                  </button>
-                )}
-                {b.progress != null && b.progress > 0.005 && (
-                  <span className="num shrink-0">{b.progress >= 0.995 ? "读完" : `${Math.round(b.progress * 100)}%`}</span>
-                )}
-                {p.learn.has(b.id) && (
-                  <span className="num shrink-0 text-good" title="学会了多少：按每个概念现在还记得的程度算，不复习会往下掉">
-                    学会 {Math.round((p.learn.get(b.id)?.learned ?? 0) * 100)}%
-                  </span>
-                )}
+                {/* 卡片窄，只留最有用的：读到多少、学会多少；都没有才写篇数 / 格式 */}
+                <span className="min-w-0 flex-1 truncate">
+                  {part ? (
+                    `含：${part.name}`
+                  ) : b.progress != null && b.progress > 0.005 ? (
+                    <>
+                      <span className="num">{b.progress >= 0.995 ? "读完" : `${Math.round(b.progress * 100)}%`}</span>
+                      {p.learn.has(b.id) && (
+                        <span className="num text-good" title="学会了多少：按每个概念现在还记得的程度算，不复习会往下掉">
+                          {" "}学会{Math.round((p.learn.get(b.id)?.learned ?? 0) * 100)}%
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    subtitle(b)
+                  )}
+                </span>
                 {/* 一直看得见（淡一点），不是悬停才出现：换封面、移除都从这里进 */}
                 <button
                   className="-mr-1 grid h-5 w-5 shrink-0 place-items-center rounded text-text-4 hover:bg-nav-card hover:text-text"
@@ -348,7 +344,8 @@ export function MenuItem(p: { onClick: () => void; icon?: React.ReactNode; dange
 }
 
 /** 没有封面图的书用的底色：按书名固定挑一个，同一本书每次都一样 */
-const PAPERS = ["#e9e4da", "#dfe5e1", "#e4e1ea", "#e8dfdc", "#dde3ea", "#e6e6dc"];
+/** 没有封面图的书，按书名固定挑一个底色：都是压暗的冷色和中性色，摆在一起不花 */
+const INKS = ["#3f5a58", "#3d4f6b", "#6a4a4f", "#4a5d4b", "#554b68", "#47596a", "#4a4c52", "#5c4a5e"];
 
 /** 封面：有图用图（用户上传的优先，否则是书里自带的），没有就排一张只有书名的封面。
  *  多篇的书带一道书脊和篇数 */
@@ -375,29 +372,34 @@ export function Cover({ book, className = "" }: { book: Book; className?: string
 
   let h = 0;
   for (const c of book.title) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  const paper = PAPERS[h % PAPERS.length];
+  const ink = INKS[h % INKS.length];
   const face = "overflow-hidden rounded-[5px] shadow-[0_1px_2px_rgb(0_0_0/0.12),0_0_0_0.5px_rgb(0_0_0/0.12)]";
   const multi = book.docs.length > 1;
-  // 多篇的书：左边一道书脊、右下角标出篇数。像一本装订起来的合集，而不是一摞纸
-  const spine = multi && <div className="absolute inset-y-0 left-0 w-[6%] min-w-[5px] bg-black/[0.07]" />;
-  const count = multi && (
-    <span className="absolute bottom-[6%] right-[7%] rounded-full bg-black/[0.08] px-[0.6em] py-[0.15em] text-[0.62em] leading-none text-[#3a3833cc] backdrop-blur-sm">
-      {book.docs.length} 篇
-    </span>
-  );
+  // 左边一道压暗的书脊，像一本立着的书；多篇的书标出篇数
+  const spine = <div className="absolute inset-y-0 left-0 w-[7%] min-w-[4px] bg-gradient-to-r from-black/25 to-black/5" />;
+  const kind = book.docs[0]?.kind.toUpperCase() ?? "";
   return (
     <div className={`relative shrink-0 select-none ${className}`}>
       {url ? (
         <div className={`relative h-full w-full ${face}`}>
           <img src={url} alt="" className="h-full w-full object-cover" />
-          {spine}
+          {multi && spine}
           {multi && <span className="absolute bottom-[6%] right-[7%] rounded-full bg-black/55 px-[0.6em] py-[0.15em] text-[0.62em] leading-none text-white">{book.docs.length} 篇</span>}
         </div>
       ) : (
-        <div className={`relative flex h-full w-full flex-col justify-between p-[10%] ${multi ? "pl-[14%]" : ""} ${face}`} style={{ background: paper }}>
+        // 排出来的封面：深底、衬线书名、一道细线，右下角压一个淡淡的首字当装饰
+        <div
+          className={`relative flex h-full w-full flex-col overflow-hidden pb-[9%] pl-[15%] pr-[10%] pt-[12%] ${face}`}
+          style={{ background: `linear-gradient(160deg, rgb(255 255 255 / 0.10), rgb(0 0 0 / 0.16)), ${ink}` }}
+        >
           {spine}
-          <div className="display-serif line-clamp-4 shrink-0 text-[0.86em] leading-snug text-[#3a3833]">{book.title}</div>
-          {multi ? count : <div className="text-[9px] tracking-wider text-[#3a383380]">{book.docs[0]?.kind.toUpperCase() ?? ""}</div>}
+          <div className="display-serif line-clamp-3 text-[0.9em] font-medium leading-[1.3] text-[#f4f1ea]">{book.title}</div>
+          <div className="mt-[0.7em] h-px w-[2.2em] bg-[#f4f1ea66]" />
+          {book.author && <div className="mt-[0.6em] truncate text-[0.6em] text-[#f4f1eab3]">{book.author}</div>}
+          <div className="display-serif pointer-events-none absolute -bottom-[0.18em] -right-[0.06em] text-[4.2em] leading-none text-[#ffffff14]" aria-hidden>
+            {[...book.title.trim()][0] ?? ""}
+          </div>
+          <div className="relative mt-auto text-[0.58em] tracking-[0.08em] text-[#f4f1ea99]">{multi ? `${book.docs.length} 篇` : kind}</div>
         </div>
       )}
     </div>
