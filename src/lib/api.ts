@@ -27,6 +27,8 @@ import type {
   QuizUnit,
   LearnOverview,
   LearnerNote,
+  CoachSignal,
+  CoachDecision,
   Trip,
 } from "./types";
 
@@ -176,6 +178,9 @@ export const learnerNotes = () => invoke<LearnerNote[] | null>("learner_notes").
 export const learnerNoteSave = (id: number | null, kind: LearnerNote["kind"], content: string) => invoke<void>("learner_note_save", { id, kind, content });
 export const learnerNoteDelete = (id: number) => invoke<void>("learner_note_delete", { id });
 export const readingTrip = (bookId: string, since: number) => invoke<Trip>("reading_trip", { bookId, since });
+export const quizConcept = (bookId: string, concept: string) => invoke<QuizItem[] | null>("quiz_concept", { bookId, concept }).then((x) => x ?? []);
+/** 让模型决定要不要打断读者；recent 是最近几次建议他的反应 */
+export const coachDecide = (bookId: string, signal: CoachSignal & { recent: string[] }) => invoke<CoachDecision>("coach_decide", { bookId, signal });
 export const quizDue = (bookId: string | null) => invoke<QuizItem[]>("quiz_due", { bookId });
 export const learnOverviews = () => invoke<LearnOverview[] | null>("learn_overviews").then((x) => x ?? []);
 

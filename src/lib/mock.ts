@@ -207,6 +207,8 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
         ],
       },
     ] as T;
+  if (cmd === "coach_decide") return { action: "quiz", message: "这段你读得很细，上次还把老陈认相机的原因答漏了，考两道？", reason: "预览" } as T;
+  if (cmd === "quiz_concept") return quizItems.slice(0, 1) as T;
   if (cmd === "learner_notes")
     return [
       { id: 1, kind: "misconception", content: "你把“认出相机”当成了老陈愣住的全部原因，漏了相机是他自己卖出去的", evidence: "问「老陈接过相机后为什么看了很久？」时答：因为他认出了这台相机", bookId: "b4", concept: "老陈", auto: true, updatedAt: Date.now() / 1000 - 3600 },

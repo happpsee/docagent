@@ -312,7 +312,7 @@ export function SettingsModal({ settings, onSave, onClose, onDocsChanged, extens
               </div>
             )}
 
-            {section === "profile" && <ProfileSection />}
+            {section === "profile" && <ProfileSection level={s.coach ?? "mid"} onLevel={(coach) => setS({ ...s, coach })} />}
             {section === "data" && <DataSection onDocsChanged={onDocsChanged} />}
           </div>
 
@@ -504,7 +504,7 @@ const NOTE_KINDS: [LearnerNote["kind"], string, string][] = [
 
 /** 我的画像：助手每次回答前都会读一遍这里。易错点是批改时自动记下的，记得不准可以直接改，
  *  它还没注意到的也可以自己写——改过的就算你写的，之后不会被自动覆盖 */
-function ProfileSection() {
+function ProfileSection(p: { level: NonNullable<Settings["coach"]>; onLevel: (l: NonNullable<Settings["coach"]>) => void }) {
   const [notes, setNotes] = useState<LearnerNote[] | null>(null);
   /** 正在写的一条：id 为 null 是新加 */
   const [draft, setDraft] = useState<{ id: number | null; kind: LearnerNote["kind"]; content: string } | null>(null);
@@ -555,6 +555,32 @@ function ProfileSection() {
 
   return (
     <div className="space-y-2">
+      <div className="mb-3 rounded-xl border border-hairline px-3.5 py-3">
+        <div className="flex items-center gap-3">
+          <span className="min-w-0 flex-1">
+            <span className="block text-[13px] text-text">主动建议</span>
+            <span className="mt-0.5 block text-[12px] leading-relaxed text-text-4">
+              {p.level === "off"
+                ? "助手不会主动打断你。考题和复习都要自己点。"
+                : `读完一段或者卡住时，助手会看情况提一句（考几道、讲一讲、先复习）。两次至少隔 ${{ low: 20, mid: 10, high: 5 }[p.level]} 分钟；你关掉一次，间隔就翻倍。`}
+            </span>
+          </span>
+          <div className="flex shrink-0 gap-0.5 rounded-lg bg-segment-bg p-0.5 text-[12px]">
+            {(
+              [
+                ["off", "关"],
+                ["low", "少"],
+                ["mid", "适中"],
+                ["high", "多"],
+              ] as const
+            ).map(([k, name]) => (
+              <button key={k} className={`rounded-md px-2.5 py-1 ${p.level === k ? "bg-surface-2 text-text shadow-sm" : "text-text-3 hover:text-text"}`} onClick={() => p.onLevel(k)}>
+                {name}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
       <p className="pb-1 text-[12px] leading-relaxed text-text-3">
         助手每次回答前都会读一遍这里。它会在对话里记下你的背景、偏好和容易卡住的地方，批改时记下你的易错点。写得不准的直接改或删；它还没注意到的，也可以告诉它。只存在这台电脑上，提问时会随问题一起发给模型。
       </p>

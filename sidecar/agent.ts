@@ -291,6 +291,8 @@ interface Ask {
 }
 type Verdict = { allow: boolean; reason?: string };
 
+/** 上一次在对话里提出考一考的时刻 */
+let lastOffer = 0;
 const pendingApprovals = new Map<string, (r: { allow: boolean; remember: boolean }) => void>();
 const pendingReader = new Map<string, (r: { ok: boolean; message: string }) => void>();
 /** 本次运行里用户已经放行的范围：read:<目录>、write:<目录>、bash:<命令>、web、mcp:<服务> */
@@ -403,6 +405,7 @@ const FREE = new Set([
   "mcp__docagent__read_section",
   "mcp__docagent__show_in_reader",
   "mcp__docagent__remember",
+  "mcp__docagent__offer_quiz",
   "mcp__docagent__forget",
   // 下面两个的审批在工具内部做
   "mcp__docagent__save_note",
@@ -764,6 +767,23 @@ function docTools(ask: Ask) {
         },
       ),
       tool(
+        "offer_quiz",
+        "向用户提出「考你一道」：界面上会出现一条建议，他点了才开始，走的是应用里真正的答题卡片（对照原文批改、记掌握度）。" +
+          "用在：你刚给他讲清了一个他没弄懂的概念，想确认他真懂了；或者他说「考考我」。" +
+          "不要在回答里自己出题。一次回答里最多提一次；提了之后正常把话说完，不用等他。",
+        {
+          reason: z.string().min(4).max(40).describe("摆给用户看的那句话，说清为什么现在考，如「刚讲完通知和请求的区别，考一道确认一下？」"),
+          concept: z.string().max(24).optional().describe("要考的概念名（画像或书里已有的叫法）；不填就考他正在读的那一段"),
+        },
+        async ({ reason, concept }) => {
+          // 频率在这儿也守一道：几分钟内提过就不再提
+          if (Date.now() - lastOffer < 3 * 60_000) return text("几分钟前刚提过，这次先不提了。正常回答就好。");
+          lastOffer = Date.now();
+          send({ type: "suggest", id: ask.id, action: "quiz", message: reason, concept });
+          return text("建议已经摆给用户了，他点了才会开始。不要在回答里出题，也不用等他。");
+        },
+      ),
+      tool(
         "remember",
         "把关于这位读者本人的一件事记进「我的画像」，以后每次对话、出题、讲解都会用到。" +
           "只记对以后有用、短期不会变的：他的背景（职业、已经会什么、在学什么、为什么学）、偏好（喜欢怎么被讲解）、强项、弱项、容易犯的错。" +
@@ -940,6 +960,7 @@ const RULES = `你运行在一个叫 DocAgent 的桌面应用里，是用户的�
 
 关于这个应用本身（用户问「怎么改」「在哪看」时，先说应用里现成的办法，不要让用户去开别的编辑器或敲命令）：
 - 改原文：Markdown 和纯文本的篇，阅读器右上角有铅笔按钮「编辑原文」，改完保存会写回原文件并重新索引。用户让你替他改时，用 Edit 改那个文件（路径用 read_section 的结果或先 Glob 找），改完告诉他改了哪里。其它格式（PDF、EPUB、Word）应用里改不了。
+- 想确认用户真懂了、或者他说「考考我」时，用 offer_quiz 提出来，不要自己在回答里出题。
 - 学习：这个应用的主线是「读完真的学会」。读完一段，页面底下会问要不要考几道题（也可以从右上角一键动作里点「考考我这一段」）；答完对照原文批改，每个概念记掌握度，到期了书架首页会提醒复习；透视里的关系图按掌握度上色。用户想被考、想复习时指给他这些入口，不要自己在对话里另出一套题。
 - 阅读器左上角：目录、透视（全书要点、人物与概念）、笔记、书签、搜索；右上角：一键动作、书签、排版。选中文字会弹出划线、写笔记、问助手。
 - 书架上每本书的「⋯」里可以换封面、改名、设防剧透、移除。左下角齿轮是设置（模型、检索、技能与 MCP、数据）。

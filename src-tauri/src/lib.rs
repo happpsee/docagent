@@ -25,6 +25,7 @@ pub mod render;
 pub mod search;
 pub mod server;
 pub mod spoiler;
+pub mod coach;
 pub mod learn;
 pub mod recap;
 pub mod xray;
@@ -98,6 +99,8 @@ pub fn run() {
             commands::quiz_answer,
             commands::quiz_due,
             commands::quiz_variant,
+            commands::quiz_concept,
+            commands::coach_decide,
             commands::quiz_from_marks,
             commands::learn_ignore,
             commands::learner_notes,

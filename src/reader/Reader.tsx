@@ -1,6 +1,6 @@
-import type { LearnOverview, QuizUnit, XRayUnit } from "@/lib/types";
+import type { CoachSignal, LearnOverview, QuizUnit, XRayUnit } from "@/lib/types";
 import { colorCode } from "./codeColor";
-import { useReadTracker } from "./readTime";
+import { needOf, useReadTracker } from "./readTime";
 import { GraphView } from "./Graph";
 import { RECAP_AFTER_MS, RecapCard, recapNotes } from "./Recap";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -95,6 +95,10 @@ interface Props {
   onReview: () => void;
   /** 忽略 / 恢复了一个概念：掌握度要重新取 */
   onLearnChanged: () => void;
+  /** 此刻在第几段（没分段是 null）：助手在对话里提出考一考时，上层要知道考哪一段 */
+  onUnit: (unit: number | null) => void;
+  /** 到了一个决策点（一段读完了 / 在一段上卡住了）：把这一段读得怎么样报上去 */
+  onDecisionPoint: (signal: CoachSignal) => void;
 }
 
 /** relocate 事件带出来的当前位置 */
@@ -145,6 +149,8 @@ export function Reader({
   onQuiz,
   onReview,
   onLearnChanged,
+  onUnit,
+  onDecisionPoint,
   onAsk,
   onOpenPart,
   onInfo,
@@ -181,9 +187,8 @@ export function Reader({
   const [showGraph, setShowGraph] = useState(false);
   /** 这一篇分成的段、每段考没考过；读完一段没考过的，在页面底下问一句要不要考 */
   const [quizUnits, setQuizUnits] = useState<QuizUnit[]>([]);
-  const [nudge, setNudge] = useState<number | null>(null);
   const touchRef = useRef<() => void>(() => {});
-  const skipped = useRef(new Set<number>());
+  const onUnitRef = useRef<(unit: number | null) => void>(() => {});
   /** 前情提要：隔了一阵再打开读到一半的书，自己弹出来；也可以从一键动作里叫 */
   const [showRecap, setShowRecap] = useState(
     () => doc.readAt != null && Date.now() - doc.readAt * 1000 > RECAP_AFTER_MS && (doc.progress ?? 0) > 0.03 && (doc.progress ?? 0) < 0.97,
@@ -897,15 +902,53 @@ export function Reader({
   // 读没读过看的是在这一段上实际停留了多久、是不是各部分都看到过——翻过去不算
   const { read: readUnits, touch, secondsOn } = useReadTracker(doc.id, quizUnits, { unit: unitHere, fraction: loc?.fraction ?? 0 });
   touchRef.current = touch;
+  onUnitRef.current = onUnit;
+  useEffect(() => onUnitRef.current(unitHere), [unitHere]);
+  // 往回翻、划线、问助手，都记在当时所在的那一段上：交给教练判断「是不是卡住了」
+  const tally = useRef(new Map<number, { backs: number; highlights: number; asks: number }>());
+  const bump = (what: "backs" | "highlights" | "asks") => {
+    if (unitHere == null) return;
+    const t = tally.current.get(unitHere) ?? { backs: 0, highlights: 0, asks: 0 };
+    t[what] += 1;
+    tally.current.set(unitHere, t);
+  };
+  const bumpRef = useRef(bump);
+  bumpRef.current = bump;
+  const lastFraction = useRef(loc?.fraction ?? 0);
   useEffect(() => {
-    if (unitHere == null || book.spoilerFree) return;
+    const f = loc?.fraction ?? 0;
+    if (f < lastFraction.current - 0.002) bumpRef.current("backs");
+    lastFraction.current = f;
+  }, [loc?.fraction]);
+  const marks = annotations.filter((a) => a.kind === "highlight").length;
+  const lastMarks = useRef(marks);
+  useEffect(() => {
+    if (marks > lastMarks.current) bumpRef.current("highlights");
+    lastMarks.current = marks;
+  }, [marks]);
+
+  // 决策点：只负责把「这一段读得怎么样」报上去。要不要打断、说什么，由教练（模型）定；多久能提一次，由频率规矩定
+  const signalOf = (why: "done" | "stuck", u: QuizUnit) => ({
+    why,
+    docId: doc.id,
+    unit: u.unit,
+    chars: u.chars ?? 0,
+    seconds: Math.round(secondsOn(u.unit)),
+    expected: Math.round(needOf(u)),
+    ...(tally.current.get(u.unit) ?? { backs: 0, highlights: 0, asks: 0 }),
+  });
+  const unitNow = quizUnits.find((x) => x.unit === unitHere);
+  const stuckNow = !!unitNow && !unitNow.quizzed && secondsOn(unitNow.unit) > needOf(unitNow) * 3 && secondsOn(unitNow.unit) > 240;
+  useEffect(() => {
+    if (unitHere == null || book.spoilerFree || draft != null) return;
     // 刚读完的那一段：读过了，而且人已经往后走了（进了下一段，或者到了这一篇的末尾）
     const atEnd = unitHere === quizUnits.length - 1 && (loc?.fraction ?? 0) >= 0.98;
-    const done = atEnd ? unitHere : unitHere - 1;
-    const u = quizUnits.find((x) => x.unit === done);
-    if (!u || u.quizzed || skipped.current.has(done) || !readUnits.has(done)) return;
-    setNudge(done);
-  }, [unitHere, quizUnits, readUnits, loc?.fraction, book.spoilerFree]);
+    const done = quizUnits.find((x) => x.unit === (atEnd ? unitHere : unitHere - 1));
+    if (done && !done.quizzed && readUnits.has(done.unit)) return onDecisionPoint(signalOf("done", done));
+    // 在这一段上停了正常时间的三倍还没走：可能卡住了
+    if (stuckNow && unitNow) onDecisionPoint(signalOf("stuck", unitNow));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unitHere, quizUnits, readUnits, loc?.fraction, book.spoilerFree, stuckNow, draft]);
 
   const seenUnits = useMemo(() => visibleUnits(xray, bounds), [xray, bounds]);
   const figures = useMemo(() => figuresOf(seenUnits), [seenUnits]);
@@ -1150,30 +1193,6 @@ export function Reader({
 
         <div className="relative min-w-0 flex-1" style={{ background: fixed ? undefined : theme.bg }}>
           <div ref={stage} className={`reader-stage absolute inset-0 ${fixed ? "reader-fixed" : ""}`} />
-          {nudge != null && draft == null && (
-            <div data-floating className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border border-hairline-strong bg-surface-2 py-1.5 pl-4 pr-1.5 text-[12.5px] text-text shadow-[0_8px_28px_-8px_rgb(0_0_0/0.35)]">
-              这一段你读了 {Math.max(1, Math.round(secondsOn(nudge) / 60))} 分钟，考你几道题？
-              <button
-                className="rounded-full bg-accent px-3 py-1 text-[12.5px] text-white hover:bg-accent-2"
-                onClick={() => {
-                  onQuiz(nudge);
-                  setNudge(null);
-                }}
-              >
-                开始
-              </button>
-              <button
-                className="grid h-6 w-6 place-items-center rounded-full text-text-3 hover:bg-nav-card hover:text-text"
-                aria-label="这一段不考"
-                onClick={() => {
-                  skipped.current.add(nudge);
-                  setNudge(null);
-                }}
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          )}
           {showRecap && draft == null && (
             <RecapCard book={book} docId={doc.id} fraction={loc?.fraction ?? doc.progress ?? 0} notes={recapSource} onClose={() => setShowRecap(false)} />
           )}
@@ -1345,7 +1364,6 @@ export function Reader({
             disabled={unitHere == null}
             onClick={() => {
               setShowQuick(false);
-              setNudge(null);
               if (unitHere != null) onQuiz(unitHere);
             }}
           >
@@ -1411,6 +1429,7 @@ export function Reader({
             setPopup(null);
           }}
           onAction={(action) => {
+            if (action === "ask") bump("asks");
             onSelection(action, popup.text, fixed ? popup.index + 1 : null, popup.cfi);
             viewRef.current?.deselect();
             setPopup(null);

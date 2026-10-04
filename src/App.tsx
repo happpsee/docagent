@@ -4,6 +4,8 @@ import { BookInfoModal, RemoveBookDialog, summaryText } from "./components/BookI
 import { ChatPanel } from "./components/ChatPanel";
 import { ImportDialog, planImport } from "./components/ImportDialog";
 import { IMPORT_EXTENSIONS, Library } from "./components/Library";
+import { SuggestionCard } from "./components/SuggestionCard";
+import { answered, asked, loadCoach, mayAsk, pushed, saveCoach } from "./lib/coach";
 import { TripCard } from "./components/TripCard";
 import { QuizSession } from "./components/QuizSession";
 import { SettingsModal } from "./components/SettingsModal";
@@ -15,6 +17,7 @@ import { resolveScope, resumePart } from "./lib/scope";
 import {
   DEFAULT_SETTINGS,
   type LearnOverview,
+  type CoachSignal,
   type Trip,
   type QuizItem,
   type AgentEvent,
@@ -61,6 +64,18 @@ export function App() {
         .join("\n");
     }, () => {});
   }, []);
+  /** 助手主动提的一条建议（教练在决策点提的，或者它在对话里提的）；一次只摆一条 */
+  const [suggestion, setSuggestion] = useState<{
+    action: "quiz" | "explain" | "review";
+    message: string;
+    bookId: string;
+    docId?: string;
+    unit?: number;
+    concept?: string;
+  } | null>(null);
+  /** 阅读器此刻在第几段 */
+  const unitNow = useRef<number | null>(null);
+  const deciding = useRef(false);
   /** 这一程：打开一本书时记下时刻和进度，合上时出小结 */
   const tripStart = useRef<{ bookId: string; since: number; progress: number } | null>(null);
   const [tripCard, setTripCard] = useState<{ bookId: string; title: string; minutes: number; gained: number; trip: Trip; story: boolean } | null>(null);
@@ -110,6 +125,10 @@ export function App() {
   readingRef.current = reading;
   const booksRef = useRef<Book[]>([]);
   booksRef.current = books;
+  const currentRef = useRef<Session | null>(null);
+  currentRef.current = current;
+  const quizRef = useRef(false);
+  quizRef.current = !!quiz;
   const viewRef = useRef<View>(view);
   viewRef.current = view;
   /** 阅读器是从哪儿打开的，关掉时回哪儿去（从对话里点引用进来的，回对话） */
@@ -320,6 +339,22 @@ export function App() {
             next[i] = { ...cur, input: { ...cur.input, ...e.input }, approval };
             return next;
           });
+          break;
+        }
+        case "suggest": {
+          // 助手在对话里提出考一考：正在答题就不叠上去
+          const open = booksRef.current.find((b) => b.docs.some((d) => d.id === readingRef.current?.docId));
+          const about = open ?? booksRef.current.find((b) => b.id === currentRef.current?.bookId) ?? null;
+          if (!about || quizRef.current) break;
+          setSuggestion({
+            action: "quiz",
+            message: e.message,
+            bookId: about.id,
+            docId: readingRef.current?.docId,
+            unit: unitNow.current ?? undefined,
+            concept: e.concept,
+          });
+          saveCoach(pushed(loadCoach(), Date.now()));
           break;
         }
         case "result":
@@ -774,7 +809,33 @@ export function App() {
   }
   const openHit = (h: Hit) => openDoc(h.docId, h.page, h.text);
 
+  /** 阅读器报上来一个决策点。先过频率这一关（太近、今天够多了、这一段问过了都不问），
+   *  过了才花一次调用让教练定：要不要打断、提什么、说哪句话 */
+  async function decide(book: Book, signal: CoachSignal) {
+    if (deciding.current || suggestion || quiz || busy || agent !== "ready") return;
+    const level = settings.coach ?? "mid";
+    const key = `${signal.docId}:${signal.unit}:${signal.why}`;
+    const state = loadCoach();
+    if (!mayAsk(level, state, key, Date.now()).ok) return;
+    deciding.current = true;
+    saveCoach(asked(state, key, Date.now()));
+    try {
+      const d = await api.coachDecide(book.id, { ...signal, recent: state.recent });
+      if (d.action === "none") return;
+      setSuggestion({ action: d.action, message: d.message, bookId: book.id, docId: signal.docId, unit: signal.unit });
+      saveCoach(pushed(loadCoach(), Date.now()));
+    } catch {
+      // 教练没答上来：读完一段的，退回最朴素的那句话；卡住的就不提了
+      if (signal.why !== "done") return;
+      setSuggestion({ action: "quiz", message: `这一段你读了 ${Math.max(1, Math.round(signal.seconds / 60))} 分钟，考你几道题？`, bookId: book.id, docId: signal.docId, unit: signal.unit });
+      saveCoach(pushed(loadCoach(), Date.now()));
+    } finally {
+      deciding.current = false;
+    }
+  }
+
   function closeReader() {
+    setSuggestion(null);
     const started = tripStart.current;
     tripStart.current = null;
     if (started) {
@@ -983,6 +1044,8 @@ export function App() {
               setQuiz({ key: Date.now(), title: "考考这一段", load: () => api.quizUnit(bookId, docId, unit) });
             }}
             onLearnChanged={refreshLearn}
+            onUnit={(u) => (unitNow.current = u)}
+            onDecisionPoint={(signal) => void decide(readingBook, signal)}
             onReview={() => {
               const { id: bookId } = readingBook;
               setQuiz({ key: Date.now(), title: "复习", fresh: true, load: () => api.quizDue(bookId) });
@@ -1095,6 +1158,41 @@ export function App() {
           makeQuestions={!tripCard.story}
           onChanged={refreshLearn}
           onClose={() => setTripCard(null)}
+        />
+      )}
+
+      {suggestion && !quiz && (
+        <SuggestionCard
+          message={suggestion.message}
+          go={suggestion.action === "explain" ? "讲讲" : suggestion.action === "review" ? "复习" : "开始"}
+          center={readingDoc ? "calc((100vw - 400px) / 2)" : "50%"}
+          onAccept={() => {
+            const s = suggestion;
+            setSuggestion(null);
+            saveCoach(answered(loadCoach(), true));
+            const book = books.find((b) => b.id === s.bookId);
+            if (!book) return;
+            if (s.action === "explain") {
+              return askAboutBook(book, "我在正读的这一段上停了很久，可能卡住了。先用三句话讲清这一段的主线，再问我具体卡在哪儿。", "讲讲这一段");
+            }
+            if (s.action === "review") return setQuiz({ key: Date.now(), title: "复习", fresh: true, load: () => api.quizDue(book.id) });
+            setQuiz({
+              key: Date.now(),
+              title: s.concept ? `考考「${s.concept}」` : "考考这一段",
+              fresh: !!s.concept,
+              // 指定了概念就考它；这个概念还没出过题，就考正在读的这一段
+              load: async () => {
+                const byConcept = s.concept ? await api.quizConcept(book.id, s.concept) : [];
+                if (byConcept.length) return byConcept;
+                if (s.docId != null && s.unit != null) return api.quizUnit(book.id, s.docId, s.unit);
+                return api.quizDue(book.id);
+              },
+            });
+          }}
+          onDismiss={() => {
+            setSuggestion(null);
+            saveCoach(answered(loadCoach(), false));
+          }}
         />
       )}
 

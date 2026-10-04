@@ -172,6 +172,23 @@ export interface LearnerNote {
   auto: boolean;
   updatedAt: number;
 }
+/** 到了一个决策点，界面交给教练的这一段的阅读情况 */
+export interface CoachSignal {
+  why: "done" | "stuck";
+  docId: string;
+  unit: number;
+  chars: number;
+  seconds: number;
+  expected: number;
+  backs: number;
+  highlights: number;
+  asks: number;
+}
+export interface CoachDecision {
+  action: "quiz" | "explain" | "review" | "none";
+  message: string;
+  reason: string;
+}
 /** 合上书时的小结 */
 export interface Trip {
   highlights: number;
@@ -352,6 +369,8 @@ export interface Settings {
   provider?: string;
   providers?: Record<string, ProviderConfig>;
   topK: number;
+  /** 主动建议的频率：关 / 少 / 适中 / 多。没设过是适中 */
+  coach?: "off" | "low" | "mid" | "high";
   /** 工作文件夹：助手在这里干活，并加载这里的 .docagent 配置 */
   workspace: string | null;
   /** 向量接口（OpenAI 兼容的 /embeddings）。可选：不填就只用全文检索 */
@@ -396,6 +415,8 @@ export type AgentEvent =
       canRemember?: boolean; rememberLabel?: string;
     }
   | ({ type: "reader_action"; id: string } & ReaderCommand)
+  /** 助手在对话里主动提出考一考 */
+  | { type: "suggest"; id: string; action: "quiz"; message: string; concept?: string }
   | { type: "result"; id: string; text: string; sessionId: string | null; costUsd: number | null; tokens?: number | null; turns: number | null; hits: Hit[] }
   | { type: "error"; id?: string; message: string; hits?: Hit[]; sessionId?: string | null };
 

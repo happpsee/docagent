@@ -835,6 +835,43 @@ pub fn quiz_variant(state: State<'_, AppState>, item_id: i64) -> Result<crate::l
         .unwrap_or(item))
 }
 
+/// 到了一个决策点：让模型决定要不要打断读者、提什么建议。能不能来问（频率）由界面先把关
+#[tauri::command(async)]
+pub fn coach_decide(
+    state: State<'_, AppState>,
+    book_id: String,
+    signal: crate::coach::Signal,
+) -> Result<crate::coach::Decision, String> {
+    let prompt = {
+        let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+        let title: String = conn
+            .query_row("SELECT title FROM books WHERE id = ?1", [&book_id], |r| r.get(0))
+            .map_err(|err| err.to_string())?;
+        crate::coach::prompt(&conn, &book_id, &title, &signal, db::now()).map_err(e)?
+    };
+    let provider = provider_of(&state)?;
+    let ask = || {
+        crate::llm::complete(&provider, crate::coach::SYSTEM, &prompt, 300)
+            .and_then(|reply| crate::coach::parse(&reply))
+    };
+    ask().or_else(|_| ask()).map_err(e)
+}
+
+/// 考某一个概念：拿它最近的一道题（没出过题就是空的）。助手在对话里提出「考你一道」时用
+#[tauri::command(async)]
+pub fn quiz_concept(
+    state: State<'_, AppState>,
+    book_id: String,
+    concept: String,
+) -> Result<Vec<crate::learn::Item>, String> {
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    Ok(crate::learn::items_for_concept(&conn, &book_id, &concept)
+        .map_err(e)?
+        .pop()
+        .into_iter()
+        .collect())
+}
+
 /// 忽略 / 恢复一个概念：忽略的不提醒复习，也不算进「学会了多少」
 #[tauri::command(async)]
 pub fn learn_ignore(state: State<'_, AppState>, book_id: String, concept: String, on: bool) -> Result<(), String> {
