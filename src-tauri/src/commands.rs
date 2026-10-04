@@ -249,6 +249,111 @@ pub async fn document_text(state: State<'_, AppState>, doc_id: String) -> Result
     .map_err(|e| e.to_string())?
 }
 
+/// 能在应用里直接改的格式：纯文本类的。别的格式（PDF、EPUB、Word）改不了
+const EDITABLE: [&str; 2] = ["md", "txt"];
+
+/// 取一篇的原文（没经过任何整理的文件内容），给编辑用
+#[tauri::command]
+pub async fn document_source(state: State<'_, AppState>, doc_id: String) -> Result<String, String> {
+    let part = {
+        let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+        crate::books::part(&conn, &doc_id).map_err(e)?
+    }
+    .ok_or_else(|| "这一篇已经不在书架上了".to_string())?;
+    if !EDITABLE.contains(&part.kind.as_str()) {
+        return Err("这种格式不能在这里编辑".to_string());
+    }
+    let path = part.path.ok_or_else(|| "找不到原文件".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read(&path)
+            .map(|bytes| parse::decode_text(&bytes))
+            .map_err(|err| format!("读不到文件 {path}：{err}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 把改过的内容写回原文件，并马上重建这一篇的索引。
+/// 只认书架上的篇（路径由这边按 id 查，不从界面传），只认纯文本类的格式。
+#[tauri::command]
+pub async fn save_document_source(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    doc_id: String,
+    content: String,
+) -> Result<(), String> {
+    let conn = state.conn.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let part = {
+            let c = conn.lock().map_err(|_| LOCK.to_string())?;
+            crate::books::part(&c, &doc_id).map_err(e)?
+        }
+        .ok_or_else(|| "这一篇已经不在书架上了".to_string())?;
+        if !EDITABLE.contains(&part.kind.as_str()) {
+            return Err("这种格式不能在这里编辑".to_string());
+        }
+        let path = part.path.ok_or_else(|| "找不到原文件".to_string())?;
+        // 先写到旁边的临时文件再换过去：写到一半出事（磁盘满、断电）不会把原文件弄成半截
+        let tmp = format!("{path}.docagent-tmp");
+        std::fs::write(&tmp, &content).map_err(|err| format!("写不了 {path}：{err}"))?;
+        std::fs::rename(&tmp, &path).map_err(|err| {
+            let _ = std::fs::remove_file(&tmp);
+            format!("写不了 {path}：{err}")
+        })?;
+        // 内容变了：这一篇的片段和索引跟着重建（文字没变的话什么都不动）
+        let item = import::ImportItem {
+            path,
+            mode: Default::default(),
+            files: None,
+        };
+        let summary = import::run(&conn, &[item], &|_| {});
+        if let Some(why) = summary.failed.first() {
+            return Err(format!("已经保存，但重建索引失败：{why}"));
+        }
+        spawn_fill_vectors(app.clone());
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 试一下模型接口通不通：发一句最短的话，看有没有回话。返回用了多少毫秒
+#[tauri::command]
+pub async fn test_model(base_url: String, api_key: String, model: String) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let provider: Provider = serde_json::from_value(serde_json::json!({
+            "baseUrl": base_url.trim(), "apiKey": api_key.trim(), "model": model.trim(),
+        }))
+        .map_err(|e| e.to_string())?;
+        let t = std::time::Instant::now();
+        crate::llm::complete(&provider, "只回答一个字。", "好", 16).map_err(e)?;
+        Ok(t.elapsed().as_millis() as u64)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 试一下向量接口：算一句话的向量，返回它的维度
+#[tauri::command]
+pub async fn test_embedding(
+    base_url: String,
+    api_key: String,
+    model: String,
+) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let cfg = crate::embed::EmbedConfig {
+            base_url: base_url.trim().to_string(),
+            api_key: api_key.trim().to_string(),
+            model: model.trim().to_string(),
+        };
+        crate::embed::embed(&cfg, &["测试"], std::time::Duration::from_secs(20))
+            .map(|v| v[0].len())
+            .map_err(e)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 重建索引：按原文件把每一篇重新解析一遍。书架不动（不增不减不换位置），划线、笔记、进度都留着。
 /// 原文件已经不在的篇保持原来的内容，返回值里列出来。
 #[tauri::command]

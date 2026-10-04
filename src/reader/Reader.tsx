@@ -7,6 +7,7 @@ import {
   ChevronRight,
   List,
   NotebookPen,
+  Pencil,
   ScanSearch,
   Search,
   Sparkles,
@@ -154,6 +155,12 @@ export function Reader({
   const sectionOf = useRef(new Map<string, number>());
   const footnoteView = useRef<FoliateView | null>(null);
   const [showQuick, setShowQuick] = useState(false);
+  /** 编辑原文（只有 Markdown 和文本能改）：null 是没在编辑 */
+  const [draft, setDraft] = useState<string | null>(null);
+  const [savingDraft, setSavingDraft] = useState(false);
+  /** 保存后加一，让引擎按新内容重新打开这一篇 */
+  const [rev, setRev] = useState(0);
+  const editable = (doc.kind === "md" || doc.kind === "txt") && !doc.missing;
   const { xray, building, build, rebuild } = useXRay(book.id, onError);
   /** 这本书别的篇上的标记：只给笔记、书签面板列出来用。
    *  画到书页上、判断「这一屏有没有书签」只看当前这一篇的——不同篇的位置编码长得一样，混在一起会画错地方 */
@@ -517,9 +524,9 @@ export function Reader({
       view?.remove();
       viewRef.current = null;
     };
-    // 只在换书时重开；其它依赖都走 ref
+    // 只在换书、或者改了原文之后重开；其它依赖都走 ref
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc.id]);
+  }, [doc.id, rev]);
 
   // 同一本书里再点别的引用
   useEffect(() => {
@@ -743,6 +750,32 @@ export function Reader({
     }
   }
 
+  // ---------- 编辑原文 ----------
+
+  async function startEdit() {
+    try {
+      setDraft(await api.documentSource(doc.id));
+      setPopup(null);
+    } catch (err) {
+      onError(String(err));
+    }
+  }
+
+  async function saveEdit() {
+    if (draft == null || savingDraft) return;
+    setSavingDraft(true);
+    try {
+      await api.saveDocumentSource(doc.id, draft);
+      setDraft(null);
+      setRev((n) => n + 1);
+      onBooksChanged();
+    } catch (err) {
+      onError(String(err));
+    } finally {
+      setSavingDraft(false);
+    }
+  }
+
   // ---------- 助手交代的事 ----------
 
   // 这一篇打不开（原文件没了、文件坏了）：助手还等着回话，告诉它，别让它干等到超时
@@ -904,6 +937,11 @@ export function Reader({
           {book.title}
           {multi ? <span className="ml-2 text-text-4">{doc.name}</span> : book.author ? <span className="ml-2 text-text-4">{book.author}</span> : null}
         </button>
+        {editable && (
+          <button className={tool(draft != null)} title="编辑原文" aria-label="编辑原文" onClick={() => (draft == null ? void startEdit() : setDraft(null))}>
+            <Pencil className="h-4 w-4" />
+          </button>
+        )}
         <button
           data-floating-toggle
           className={tool(showQuick)}
@@ -1047,6 +1085,34 @@ export function Reader({
 
         <div className="relative min-w-0 flex-1" style={{ background: fixed ? undefined : theme.bg }}>
           <div ref={stage} className={`reader-stage absolute inset-0 ${fixed ? "reader-fixed" : ""}`} />
+          {draft != null && (
+            <div className="absolute inset-0 z-20 flex flex-col bg-bg">
+              <div className="flex items-center gap-2 border-b border-hairline-soft px-4 py-1.5 text-[12px] text-text-3">
+                <span className="min-w-0 flex-1 truncate">
+                  正在改原文件{doc.path ? `：${doc.path.split("/").pop()}` : ""}。保存后会写回磁盘；改动处后面的划线位置可能对不上。
+                </span>
+                <button className="rounded-md px-2.5 py-1 text-text-2 hover:bg-nav-card" disabled={savingDraft} onClick={() => setDraft(null)}>
+                  不改了
+                </button>
+                <button className="rounded-md bg-accent px-3 py-1 text-white disabled:opacity-60" disabled={savingDraft} onClick={() => void saveEdit()}>
+                  {savingDraft ? "保存中…" : "保存  ⌘S"}
+                </button>
+              </div>
+              <textarea
+                autoFocus
+                value={draft}
+                spellCheck={false}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+                    e.preventDefault();
+                    void saveEdit();
+                  }
+                }}
+                className="num min-h-0 flex-1 resize-none bg-transparent px-[max(24px,calc(50%-380px))] py-6 text-[14px] leading-7 text-text outline-none"
+              />
+            </div>
+          )}
           {!ready && !failed && (
             <p className="arc-shimmer-text pointer-events-none absolute inset-x-0 top-10 text-center text-[13px]">正在打开…</p>
           )}

@@ -256,11 +256,22 @@ export interface Session {
   scope: Scope | null;
 }
 
-/** 模型供应商：任何 Anthropic 兼容接口 */
+/** 一家模型供应商的配置 */
+export interface ProviderConfig {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
+/** 应用设置。baseUrl / apiKey / model 是「正在用的那一家」的，Rust 和助手只读这三项；
+ *  providers 里存着每一家各自填过的，换着用的时候不用重填 */
 export interface Settings {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /** 正在用的是哪一家（PROVIDERS 里的 id） */
+  provider?: string;
+  providers?: Record<string, ProviderConfig>;
   topK: number;
   /** 工作文件夹：助手在这里干活，并加载这里的 .docagent 配置 */
   workspace: string | null;

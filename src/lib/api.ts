@@ -66,6 +66,18 @@ export async function onFileDrop(fn: (paths: string[]) => void, onHover: (over: 
 
 export const documentText = (docId: string) => invoke<string>("document_text", { docId });
 
+/** 一篇的原文（Markdown、文本），给编辑用 */
+export const documentSource = (docId: string) => invoke<string>("document_source", { docId });
+/** 把改过的内容写回原文件并重建这一篇的索引 */
+export const saveDocumentSource = (docId: string, content: string) => invoke<void>("save_document_source", { docId, content });
+
+/** 试一下模型接口通不通，返回用了多少毫秒 */
+export const testModel = (baseUrl: string, apiKey: string, model: string) =>
+  invoke<number>("test_model", { baseUrl, apiKey, model });
+/** 试一下向量接口，返回向量的维度 */
+export const testEmbedding = (baseUrl: string, apiKey: string, model: string) =>
+  invoke<number>("test_embedding", { baseUrl, apiKey, model });
+
 // ---------- 书架 ----------
 
 export const listBooks = () => invoke<Book[] | null>("list_books").then((l) => l ?? []);

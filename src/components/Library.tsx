@@ -322,7 +322,7 @@ export function MenuItem(p: { onClick: () => void; icon?: React.ReactNode; dange
 const PAPERS = ["#e9e4da", "#dfe5e1", "#e4e1ea", "#e8dfdc", "#dde3ea", "#e6e6dc"];
 
 /** 封面：有图用图（用户上传的优先，否则是书里自带的），没有就排一张只有书名的封面。
- *  多篇的书在后面露出两层纸边，一眼看得出是一摞 */
+ *  多篇的书带一道书脊和篇数 */
 export function Cover({ book, className = "" }: { book: Book; className?: string }) {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
@@ -348,23 +348,27 @@ export function Cover({ book, className = "" }: { book: Book; className?: string
   for (const c of book.title) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   const paper = PAPERS[h % PAPERS.length];
   const face = "overflow-hidden rounded-[5px] shadow-[0_1px_2px_rgb(0_0_0/0.12),0_0_0_0.5px_rgb(0_0_0/0.12)]";
-  const stacked = book.docs.length > 1;
+  const multi = book.docs.length > 1;
+  // 多篇的书：左边一道书脊、右下角标出篇数。像一本装订起来的合集，而不是一摞纸
+  const spine = multi && <div className="absolute inset-y-0 left-0 w-[6%] min-w-[5px] bg-black/[0.07]" />;
+  const count = multi && (
+    <span className="absolute bottom-[6%] right-[7%] rounded-full bg-black/[0.08] px-[0.6em] py-[0.15em] text-[0.62em] leading-none text-[#3a3833cc] backdrop-blur-sm">
+      {book.docs.length} 篇
+    </span>
+  );
   return (
     <div className={`relative shrink-0 ${className}`}>
-      {stacked && (
-        <>
-          <div className={`absolute inset-0 translate-x-[7px] translate-y-[-7px] ${face}`} style={{ background: paper, filter: "brightness(0.93)" }} />
-          <div className={`absolute inset-0 translate-x-[3.5px] translate-y-[-3.5px] ${face}`} style={{ background: paper, filter: "brightness(0.965)" }} />
-        </>
-      )}
       {url ? (
-        <img src={url} alt="" className={`relative h-full w-full object-cover ${face}`} />
+        <div className={`relative h-full w-full ${face}`}>
+          <img src={url} alt="" className="h-full w-full object-cover" />
+          {spine}
+          {multi && <span className="absolute bottom-[6%] right-[7%] rounded-full bg-black/55 px-[0.6em] py-[0.15em] text-[0.62em] leading-none text-white">{book.docs.length} 篇</span>}
+        </div>
       ) : (
-        <div className={`relative flex h-full w-full flex-col justify-between p-[10%] ${face}`} style={{ background: paper }}>
+        <div className={`relative flex h-full w-full flex-col justify-between p-[10%] ${multi ? "pl-[14%]" : ""} ${face}`} style={{ background: paper }}>
+          {spine}
           <div className="display-serif line-clamp-4 shrink-0 text-[0.86em] leading-snug text-[#3a3833]">{book.title}</div>
-          <div className="text-[9px] tracking-wider text-[#3a383380]">
-            {stacked ? `${book.docs.length} 篇` : (book.docs[0]?.kind.toUpperCase() ?? "")}
-          </div>
+          {multi ? count : <div className="text-[9px] tracking-wider text-[#3a383380]">{book.docs[0]?.kind.toUpperCase() ?? ""}</div>}
         </div>
       )}
     </div>

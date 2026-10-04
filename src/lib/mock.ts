@@ -176,6 +176,9 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
   }
   if (cmd === "document_book") return mdBook(sampleMd) as T;
   if (cmd === "list_books") return structuredClone(books) as T;
+  if (cmd === "document_source") return sampleMd as T;
+  if (cmd === "test_model") return 820 as T;
+  if (cmd === "test_embedding") return 1024 as T;
   if (cmd === "list_sessions") return structuredClone(sessions) as T;
   if (cmd === "xray_get") return (args?.bookId === "b4" ? xray : { units: [], total: 0 }) as T;
   if (cmd === "update_book") {
