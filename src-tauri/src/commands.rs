@@ -607,6 +607,193 @@ pub fn xray_build(
     Ok(())
 }
 
+// ---------- 学习：出题、批改、掌握度 ----------
+
+fn provider_of(state: &State<'_, AppState>) -> Result<Provider, String> {
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    let provider: Provider = db::get_setting(&conn, SETTINGS_KEY)
+        .map_err(e)?
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    if provider.api_key.is_empty() || provider.base_url.is_empty() || provider.model.is_empty() {
+        return Err("还没配置模型：请在设置里填接口地址、API Key 和模型名".to_string());
+    }
+    Ok(provider)
+}
+
+/// 一篇分成的段，和每段出没出过题。界面靠它知道「刚读完的是哪一段」
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuizUnit {
+    unit: i64,
+    page: Option<i64>,
+    start: f64,
+    end: f64,
+    quizzed: bool,
+}
+
+#[tauri::command(async)]
+pub fn quiz_units(state: State<'_, AppState>, doc_id: String) -> Result<Vec<QuizUnit>, String> {
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    let Some(part) = crate::books::part(&conn, &doc_id).map_err(e)? else {
+        return Ok(vec![]);
+    };
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT unit FROM quiz_items WHERE doc_id = ?1")
+        .map_err(|err| err.to_string())?;
+    let done: std::collections::HashSet<i64> = stmt
+        .query_map([&doc_id], |r| r.get(0))
+        .and_then(|rows| rows.collect())
+        .map_err(|err| err.to_string())?;
+    Ok(crate::xray::plan(&conn, &doc_id, &part.kind)
+        .map_err(e)?
+        .into_iter()
+        .map(|u| QuizUnit {
+            unit: u.index,
+            page: u.page,
+            start: u.start,
+            end: u.end,
+            quizzed: done.contains(&u.index),
+        })
+        .collect())
+}
+
+/// 一段的题。出过就用存着的；没出过现出（一次模型调用）
+#[tauri::command(async)]
+pub fn quiz_unit(
+    state: State<'_, AppState>,
+    book_id: String,
+    doc_id: String,
+    unit: i64,
+) -> Result<Vec<crate::learn::Item>, String> {
+    let (text, concepts) = {
+        let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+        let had = crate::learn::items_for_unit(&conn, &doc_id, unit).map_err(e)?;
+        if !had.is_empty() {
+            return Ok(had);
+        }
+        let part = crate::books::part(&conn, &doc_id)
+            .map_err(e)?
+            .ok_or("这一篇不在书架上了")?;
+        let plan = crate::xray::plan(&conn, &doc_id, &part.kind).map_err(e)?;
+        let u = plan.iter().find(|u| u.index == unit).ok_or("找不到这一段")?;
+        let text = crate::xray::unit_text(&conn, &doc_id, u).map_err(e)?;
+        // 透视过的段：题目考的概念沿用透视里的名字，掌握度才能落到关系图的同一个点上
+        let concepts: Vec<String> = conn
+            .query_row(
+                "SELECT entities FROM xray_units WHERE doc_id = ?1 AND unit = ?2",
+                rusqlite::params![doc_id, unit],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Vec<crate::xray::Entity>>(&raw).ok())
+            .map(|list| list.into_iter().map(|x| x.name).collect())
+            .unwrap_or_default();
+        (text, concepts)
+    };
+    if text.trim().chars().count() < 200 {
+        return Err("这一段内容太少，出不了题".to_string());
+    }
+    let provider = provider_of(&state)?;
+    let ask = || {
+        crate::llm::complete(
+            &provider,
+            crate::learn::GEN_SYSTEM,
+            &crate::learn::gen_prompt(&text, &concepts),
+            1500,
+        )
+        .and_then(|reply| crate::learn::parse_items(&reply, &text))
+    };
+    let items = ask().or_else(|_| ask()).map_err(e)?;
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    // 模型想的这段时间里别处也出了这一段的题：用先存下的那份
+    let had = crate::learn::items_for_unit(&conn, &doc_id, unit).map_err(e)?;
+    if !had.is_empty() {
+        return Ok(had);
+    }
+    crate::learn::save_items(&conn, &book_id, &doc_id, unit, &items, db::now()).map_err(e)?;
+    crate::learn::items_for_unit(&conn, &doc_id, unit).map_err(e)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuizResult {
+    grade: &'static str,
+    missing: Vec<String>,
+    feedback: String,
+    /// 这个概念下次什么时候复习
+    due: i64,
+}
+
+/// 交一道题的回答。answer 为空是「不会」：不用问模型，直接记没答上来
+#[tauri::command(async)]
+pub fn quiz_answer(
+    state: State<'_, AppState>,
+    item_id: i64,
+    answer: String,
+) -> Result<QuizResult, String> {
+    let item = {
+        let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+        crate::learn::item(&conn, item_id).map_err(e)?.ok_or("这道题不在了")?
+    };
+    let verdict = if answer.trim().is_empty() {
+        crate::learn::Verdict {
+            grade: crate::learn::Grade::Lapsed,
+            missing: item.rubric.clone(),
+            feedback: "先看一眼原文里是怎么说的，过会儿再考你一次。".to_string(),
+        }
+    } else {
+        let provider = provider_of(&state)?;
+        let ask = || {
+            crate::llm::complete(
+                &provider,
+                crate::learn::GRADE_SYSTEM,
+                &crate::learn::grade_prompt(&item, answer.trim()),
+                600,
+            )
+            .and_then(|reply| crate::learn::parse_verdict(&reply, &item))
+        };
+        ask().or_else(|_| ask()).map_err(e)?
+    };
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    let now = db::now();
+    let due = crate::learn::apply(&conn, &item.book_id, &item.concept, verdict.grade, now).map_err(e)?;
+    crate::learn::log_review(&conn, &item, answer.trim(), &verdict, now).map_err(e)?;
+    Ok(QuizResult {
+        grade: verdict.grade.as_str(),
+        missing: verdict.missing,
+        feedback: verdict.feedback,
+        due,
+    })
+}
+
+/// 现在该复习的题；book_id 为空是所有书的
+#[tauri::command(async)]
+pub fn quiz_due(
+    state: State<'_, AppState>,
+    book_id: Option<String>,
+) -> Result<Vec<crate::learn::Item>, String> {
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    crate::learn::due_items(&conn, book_id.as_deref(), db::now(), 20).map_err(e)
+}
+
+/// 一本书学得怎么样：每个考过的概念的掌握度、学会了多少、该复习几个
+#[tauri::command(async)]
+pub fn learn_overview(
+    state: State<'_, AppState>,
+    book_id: String,
+) -> Result<crate::learn::Overview, String> {
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    crate::learn::overview(&conn, &book_id, db::now()).map_err(e)
+}
+
+/// 书架用：考过题的每本书的概况
+#[tauri::command(async)]
+pub fn learn_overviews(state: State<'_, AppState>) -> Result<Vec<crate::learn::Overview>, String> {
+    let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
+    crate::learn::overviews(&conn, db::now()).map_err(e)
+}
+
 /// 前情提要。notes 是界面挑好的「读过那些段的要点」（没做过透视就是空的，这里改用原文）；
 /// 同一个位置算过就直接给存着的，fresh 是要求重写
 #[tauri::command(async)]

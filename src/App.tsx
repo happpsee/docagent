@@ -4,6 +4,7 @@ import { BookInfoModal, RemoveBookDialog, summaryText } from "./components/BookI
 import { ChatPanel } from "./components/ChatPanel";
 import { ImportDialog, planImport } from "./components/ImportDialog";
 import { IMPORT_EXTENSIONS, Library } from "./components/Library";
+import { QuizSession } from "./components/QuizSession";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
 import { Reader, type Panel, type ReadTarget, type SelectionAction } from "./reader/Reader";
@@ -12,6 +13,8 @@ import { unitOf } from "./lib/citations";
 import { resolveScope, resumePart } from "./lib/scope";
 import {
   DEFAULT_SETTINGS,
+  type LearnOverview,
+  type QuizItem,
   type AgentEvent,
   type Annotation,
   type Block,
@@ -39,6 +42,14 @@ export function App() {
   const [agent, setAgent] = useState<AgentState>("unconfigured");
   const [books, setBooks] = useState<Book[]>([]);
   const [booksLoaded, setBooksLoaded] = useState(false);
+  /** 每本书学得怎么样（只有考过题的书）；答完一题、打开应用时取 */
+  const [learn, setLearn] = useState<Map<string, LearnOverview>>(new Map());
+  /** 正在进行的一轮问答：读完一段的题，或者到期的复习。key 换了就是新的一轮 */
+  const [quiz, setQuiz] = useState<{ key: number; title: string; load: () => Promise<QuizItem[]> } | null>(null);
+  const refreshLearn = useCallback(() => {
+    void api.learnOverviews().then((list) => setLearn(new Map(list.map((o) => [o.bookId, o]))), () => {});
+  }, []);
+  useEffect(refreshLearn, [refreshLearn]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [current, setCurrent] = useState<Session | null>(null);
   const [messages, setMessagesState] = useState<Message[]>([]);
@@ -934,6 +945,16 @@ export function App() {
             onSpoiler={(on) => setSpoiler(readingBook, on)}
             onBooksChanged={refreshBooks}
             onError={setError}
+            learn={learn.get(readingBook.id) ?? null}
+            onQuiz={(unit) => {
+              const { id: bookId } = readingBook;
+              const { id: docId } = readingDoc;
+              setQuiz({ key: Date.now(), title: "考考这一段", load: () => api.quizUnit(bookId, docId, unit) });
+            }}
+            onReview={() => {
+              const { id: bookId } = readingBook;
+              setQuiz({ key: Date.now(), title: "复习", load: () => api.quizDue(bookId) });
+            }}
           />
         )}
         {!readingDoc && view === "library" && (
@@ -946,6 +967,8 @@ export function App() {
             onPickCover={pickCover}
             onReveal={reveal}
             onRemove={setRemoving}
+            learn={learn}
+            onReview={(bookId) => setQuiz({ key: Date.now(), title: "复习", load: () => api.quizDue(bookId) })}
           />
         )}
         <div
@@ -1028,6 +1051,19 @@ export function App() {
         />
       )}
       {removing && <RemoveBookDialog book={removing} onCancel={() => setRemoving(null)} onConfirm={(withSessions) => void removeBook(removing, withSessions)} />}
+
+      {quiz && (
+        <QuizSession
+          key={quiz.key}
+          title={quiz.title}
+          load={quiz.load}
+          right={readingDoc ? 416 : 20}
+          bookTitle={(id) => books.find((b) => b.id === id)?.title ?? ""}
+          onShowSource={(item) => openDoc(item.docId, null, item.evidence)}
+          onAnswered={refreshLearn}
+          onClose={() => setQuiz(null)}
+        />
+      )}
 
       {showSettings && (
         <SettingsModal

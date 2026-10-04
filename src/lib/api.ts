@@ -22,6 +22,10 @@ import type {
   Scope,
   Session,
   XRay,
+  QuizItem,
+  QuizResult,
+  QuizUnit,
+  LearnOverview,
 } from "./types";
 
 export interface ImportProgress {
@@ -155,6 +159,16 @@ export const saveReadingState = (docId: string, location: string, fraction: numb
 export const xrayGet = (bookId: string) => invoke<XRay | null>("xray_get", { bookId }).then((x) => x ?? { units: [], total: 0 });
 /** 开始（或接着）透视；在后台跑，进度走 onXRayProgress */
 export const xrayBuild = (bookId: string) => invoke<void>("xray_build", { bookId });
+// ---------- 学习：出题、批改、掌握度 ----------
+
+export const quizUnits = (docId: string) => invoke<QuizUnit[]>("quiz_units", { docId });
+/** 一段的题：出过就用存着的，没出过现出 */
+export const quizUnit = (bookId: string, docId: string, unit: number) => invoke<QuizItem[]>("quiz_unit", { bookId, docId, unit });
+/** 交回答；空串是「不会」 */
+export const quizAnswer = (itemId: number, answer: string) => invoke<QuizResult>("quiz_answer", { itemId, answer });
+export const quizDue = (bookId: string | null) => invoke<QuizItem[]>("quiz_due", { bookId });
+export const learnOverviews = () => invoke<LearnOverview[] | null>("learn_overviews").then((x) => x ?? []);
+
 /** 前情提要。notes 是读过那些段的要点（没做过透视传空串，Rust 改用原文）；fresh 是不用存着的、重写 */
 export const recap = (bookId: string, docId: string, fraction: number, notes: string, fresh: boolean) =>
   invoke<string>("recap", { bookId, docId, fraction, notes, fresh });

@@ -25,6 +25,7 @@ pub mod render;
 pub mod search;
 pub mod server;
 pub mod spoiler;
+pub mod learn;
 pub mod recap;
 pub mod xray;
 
@@ -92,6 +93,12 @@ pub fn run() {
             commands::xray_build,
             commands::xray_clear,
             commands::recap,
+            commands::quiz_units,
+            commands::quiz_unit,
+            commands::quiz_answer,
+            commands::quiz_due,
+            commands::learn_overview,
+            commands::learn_overviews,
             commands::read_file_bytes,
             commands::document_book,
             commands::document_source,

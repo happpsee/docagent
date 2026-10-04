@@ -160,6 +160,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
     crate::fts::rebuild_if_empty(conn)?;
     crate::xray::init_schema(conn)?;
     crate::recap::init_schema(conn)?;
+    crate::learn::init_schema(conn)?;
     // 老库升级：docs 后来才加的列
     let has_author = conn
         .prepare("SELECT 1 FROM pragma_table_info('docs') WHERE name = 'author'")?

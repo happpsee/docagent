@@ -118,6 +118,52 @@ export interface XRayUnit {
   /** 这一段里原文写明的关系；老的透视数据没有这一项 */
   relations?: { from: string; to: string; label: string }[];
 }
+/** 一道题：考一个概念，带评分要点和原文依据 */
+export interface QuizItem {
+  id: number;
+  bookId: string;
+  docId: string;
+  unit: number;
+  concept: string;
+  question: string;
+  rubric: string[];
+  evidence: string;
+}
+export interface QuizResult {
+  grade: "recalled" | "partial" | "lapsed";
+  /** 没答到的评分要点（rubric 里的原话） */
+  missing: string[];
+  feedback: string;
+  /** 这个概念下次什么时候复习（秒） */
+  due: number;
+}
+/** 一篇分成的段，和每段出没出过题 */
+export interface QuizUnit {
+  unit: number;
+  page: number | null;
+  start: number;
+  end: number;
+  quizzed: boolean;
+}
+export interface LearnConcept {
+  concept: string;
+  /** 此刻还记得的概率，0–1；会随时间掉 */
+  mastery: number;
+  due: number;
+  reps: number;
+  lapses: number;
+  lastGrade: QuizResult["grade"];
+}
+/** 一本书学得怎么样 */
+export interface LearnOverview {
+  bookId: string;
+  concepts: LearnConcept[];
+  total: number;
+  /** 学会了多少：所有概念掌握度的平均，没考过的算 0 */
+  learned: number;
+  /** 现在该复习的概念数 */
+  due: number;
+}
 export interface XRay {
   units: XRayUnit[];
   /** 全书一共多少段；units 比它少说明还没做完 */

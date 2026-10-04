@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY, type Simulation, type SimulationLinkDatum, type SimulationNodeDatum } from "d3-force";
 import { X } from "lucide-react";
-import type { XRayUnit } from "@/lib/types";
+import type { LearnConcept, LearnOverview, XRayUnit } from "@/lib/types";
+import { dueText } from "@/components/QuizSession";
 import { typeTone, type Figure } from "./XRay";
 
 /** 图上最多画多少个：再多就糊成一团了，取出现得最多的 */
@@ -22,6 +23,14 @@ interface GLink extends SimulationLinkDatum<GNode> {
 
 const COLOR: Record<string, string> = { 人物: "#c2603c", 地点: "#4f8a5b", 机构: "#2f6fb0", 概念: "#7a5fb0", 物品: "#a8842c", 条款: "#5a7d8c" };
 const colorOf = (type: string) => COLOR[type] ?? "#8a8780";
+
+/** 掌握地图的颜色：没考过灰，记得牢绿，快忘了黄，没答上来 / 忘了红 */
+const MASTERY = { none: "#b9b6ae", good: "#4f8a5b", weak: "#c9952a", bad: "#c2603c" };
+function masteryColor(c: LearnConcept | undefined): string {
+  if (!c) return MASTERY.none;
+  if (c.lastGrade === "lapsed" || c.mastery < 0.5) return MASTERY.bad;
+  return c.mastery >= 0.85 && c.lastGrade === "recalled" ? MASTERY.good : MASTERY.weak;
+}
 
 /** 从读过的那些段里拼出图：点是人物和概念，线是原文写明的关系；
  *  没抽出关系的段（老的透视数据都是这样）退回「出现在同一段」连虚线；抽出了关系的段，同段出现要两次以上才连，不然每段都是一团 */
@@ -60,6 +69,8 @@ export function GraphView(p: {
   figures: Figure[];
   /** 后面还有多少段没读到（防剧透藏起来的） */
   hidden: number;
+  /** 这本书的掌握度；考过题才有，有了图就按掌握度上色 */
+  learn: LearnOverview | null;
   onClose: () => void;
   onGoQuote: (quote: string, unit: XRayUnit) => void;
   onAskAbout: (name: string) => void;
@@ -71,6 +82,9 @@ export function GraphView(p: {
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const [picked, setPicked] = useState<string | null>(null);
   const [hover, setHover] = useState<string | null>(null);
+  const state = useMemo(() => new Map((p.learn?.concepts ?? []).map((c) => [c.concept, c])), [p.learn]);
+  const [byMastery, setByMastery] = useState(() => !!p.learn?.concepts.length);
+  const fill = (n: GNode) => (byMastery ? masteryColor(state.get(n.id)) : colorOf(n.figure.type));
   const graph = useMemo(() => graphOf(p.units, p.figures), [p.units, p.figures]);
   const drag = useRef<{ node: GNode | null; x: number; y: number; moved: boolean } | null>(null);
 
@@ -86,7 +100,7 @@ export function GraphView(p: {
   useEffect(() => {
     const s = forceSimulation(graph.nodes)
       .force("link", forceLink<GNode, GLink>(graph.links).distance((l) => (l.label ? 95 : 120)).strength((l) => Math.min(0.9, 0.25 + l.weight * 0.12)))
-      .force("charge", forceManyBody().strength(-260))
+      .force("charge", forceManyBody().strength(-420))
       .force("x", forceX(0).strength(0.06))
       .force("y", forceY(0).strength(0.08))
       .force("collide", forceCollide<GNode>().radius((n) => n.r + 16))
@@ -124,13 +138,38 @@ export function GraphView(p: {
   return (
     <div className="absolute inset-0 z-40 flex flex-col bg-bg" role="dialog" aria-label="关系图">
       <div className="flex h-11 shrink-0 items-center gap-3 border-b border-hairline px-4">
-        <span className="text-[13px] font-medium text-text">关系图</span>
-        <span className="text-[12px] text-text-4">
+        <span className="shrink-0 whitespace-nowrap text-[13px] font-medium text-text">关系图</span>
+        <span className="min-w-0 truncate text-[12px] text-text-4" title="滚轮缩放 · 拖动空白处平移 · 拖动圆点调整">
           {graph.nodes.length} 个人物与概念 · {graph.links.length} 条关系
           {p.hidden > 0 ? " · 只画了你读过的部分，读到后面会长出新的" : ""}
         </span>
         <span className="flex-1" />
-        <span className="hidden text-[11px] text-text-4 sm:inline">滚轮缩放 · 拖动空白处平移 · 拖动圆点调整</span>
+        {byMastery && (
+          <span className="flex shrink-0 items-center gap-2.5 whitespace-nowrap text-[11px] text-text-3">
+            {(
+              [
+                ["记得牢", MASTERY.good],
+                ["快忘了", MASTERY.weak],
+                ["没掌握", MASTERY.bad],
+                ["没考过", MASTERY.none],
+              ] as const
+            ).map(([name, color]) => (
+              <span key={name} className="inline-flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full" style={{ background: color }} />
+                {name}
+              </span>
+            ))}
+            {p.learn && <span className="num text-good">学会 {Math.round(p.learn.learned * 100)}%</span>}
+          </span>
+        )}
+        <div className="flex shrink-0 gap-0.5 whitespace-nowrap rounded-lg bg-segment-bg p-0.5 text-[12px]">
+          <button className={`rounded-md px-2 py-0.5 ${byMastery ? "bg-surface-2 text-text shadow-sm" : "text-text-3"}`} onClick={() => setByMastery(true)}>
+            掌握度
+          </button>
+          <button className={`rounded-md px-2 py-0.5 ${!byMastery ? "bg-surface-2 text-text shadow-sm" : "text-text-3"}`} onClick={() => setByMastery(false)}>
+            类型
+          </button>
+        </div>
         <button className="grid h-7 w-7 place-items-center rounded-md text-text-3 hover:bg-nav-card hover:text-text" aria-label="关闭关系图" onClick={p.onClose}>
           <X className="h-4 w-4" />
         </button>
@@ -203,7 +242,7 @@ export function GraphView(p: {
                   onPointerEnter={() => !drag.current && setHover(n.id)}
                   onPointerLeave={() => setHover(null)}
                 >
-                  <circle r={n.r} fill={colorOf(n.figure.type)} fillOpacity={0.88} stroke={picked === n.id ? "var(--color-text)" : "var(--color-bg)"} strokeWidth={picked === n.id ? 2 : 1.5} />
+                  <circle r={n.r} fill={fill(n)} fillOpacity={0.88} stroke={picked === n.id ? "var(--color-text)" : "var(--color-bg)"} strokeWidth={picked === n.id ? 2 : 1.5} />
                   <text y={n.r + 13} textAnchor="middle" className="fill-text" fontSize={11.5} paintOrder="stroke" stroke="var(--color-bg)" strokeWidth={3}>
                     {n.id}
                   </text>
@@ -221,6 +260,12 @@ export function GraphView(p: {
               <span className="num ml-auto text-[11px] text-text-4">{chosen.figure.mentions.length} 处</span>
             </div>
             <p className="mt-1 text-[12.5px] leading-relaxed text-text-2">{chosen.figure.mentions[chosen.figure.mentions.length - 1].desc}</p>
+            <p className="mt-1.5 flex items-center gap-1.5 text-[11.5px] text-text-3">
+              <span className="h-2 w-2 rounded-full" style={{ background: masteryColor(state.get(chosen.id)) }} />
+              {state.has(chosen.id)
+                ? `掌握度 ${Math.round((state.get(chosen.id)?.mastery ?? 0) * 100)}% · 考过 ${state.get(chosen.id)?.reps} 次 · ${dueText(state.get(chosen.id)?.due ?? 0)}复习`
+                : "还没考过"}
+            </p>
             {ties.length > 0 && (
               <ul className="mt-2 space-y-1 border-t border-hairline-soft pt-2">
                 {ties.slice(0, 8).map((l, i) => {

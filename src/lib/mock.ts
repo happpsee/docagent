@@ -146,6 +146,11 @@ const xray = {
   ],
 };
 
+const quizItems = [
+  { id: 1, bookId: "b4", docId: "d4", unit: 0, concept: "老陈", question: "老陈接过相机后为什么看了很久？", rubric: ["他认出了这台相机", "三十年前是老陈亲手卖出去的"], evidence: "这台相机他认得——三十年前，是他亲手卖出去的。" },
+  { id: 2, bookId: "b4", docId: "d4", unit: 0, concept: "小满", question: "机身上的刻字说明了这台相机的什么来历？", rubric: ["是送给一个叫小满的人的礼物", "时间是一九八七年秋"], evidence: "赠予小满，一九八七年秋" },
+];
+
 /** 预览里没有 Rust，用最简单的规则把示例 Markdown 排成书（正式环境是 Rust 的 render.rs） */
 function mdBook(md: string) {
   const toc: { label: string; href: string; subitems: never[] }[] = [];
@@ -185,6 +190,22 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
   if (cmd === "test_model") return 820 as T;
   if (cmd === "test_embedding") return 1024 as T;
   if (cmd === "list_sessions") return structuredClone(sessions) as T;
+  if (cmd === "quiz_units")
+    return (args?.docId === "d4" ? xray.units.map((u, i) => ({ unit: u.unit, page: u.page, start: u.start, end: u.end, quizzed: i === 0 })) : []) as T;
+  if (cmd === "quiz_unit" || cmd === "quiz_due") return quizItems as T;
+  if (cmd === "quiz_answer")
+    return { grade: "partial", missing: ["三十年前是老陈亲手卖出去的"], feedback: "认出相机这一点说对了，但没说到它是老陈自己卖出去的——这才是他愣住的原因。", due: Date.now() / 1000 + 86400 } as T;
+  if (cmd === "learn_overviews")
+    return [
+      {
+        bookId: "b4", total: 6, learned: 0.31, due: 2,
+        concepts: [
+          { concept: "老陈", mastery: 0.93, due: Date.now() / 1000 + 5 * 86400, reps: 2, lapses: 0, lastGrade: "recalled" },
+          { concept: "年轻人", mastery: 0.62, due: Date.now() / 1000 - 3600, reps: 1, lapses: 0, lastGrade: "partial" },
+          { concept: "小满", mastery: 0.3, due: Date.now() / 1000 - 7200, reps: 2, lapses: 1, lastGrade: "lapsed" },
+        ],
+      },
+    ] as T;
   if (cmd === "recap") return "老陈守着一间相机修理店，雨夜里一个年轻人带来一台他三十年前卖出去的旧胶片机。相机是年轻人刚过世的外婆留下的，里面还有一卷没冲洗的底片，机身上刻着“赠予小满”。老陈答应三天后交照片——你停在他刚把底片取出来的地方。" as T;
   if (cmd === "xray_get") return (args?.bookId === "b4" ? xray : { units: [], total: 0 }) as T;
   if (cmd === "update_book") {

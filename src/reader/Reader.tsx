@@ -1,4 +1,4 @@
-import type { XRayUnit } from "@/lib/types";
+import type { LearnOverview, QuizUnit, XRayUnit } from "@/lib/types";
 import { colorCode } from "./codeColor";
 import { GraphView } from "./Graph";
 import { RECAP_AFTER_MS, RecapCard, recapNotes } from "./Recap";
@@ -86,6 +86,12 @@ interface Props {
   /** 进度、封面变了，书架要刷新 */
   onBooksChanged: () => void;
   onError: (message: string) => void;
+  /** 这本书学得怎么样（没考过题是 null） */
+  learn: LearnOverview | null;
+  /** 考这一篇的第几段 */
+  onQuiz: (unit: number) => void;
+  /** 复习这本书到期的概念 */
+  onReview: () => void;
 }
 
 /** relocate 事件带出来的当前位置 */
@@ -104,7 +110,6 @@ export type Panel = "toc" | "xray" | "notes" | "bookmarks" | "search";
 /** 一键动作：不用想怎么问，点一下就把这句话连同当前位置交给助手 */
 const QUICK: { name: string; prompt: string }[] = [
   { name: "总结这一章", prompt: "总结我正在读的这一章：先用三句话说清讲了什么，再列出三到五个要点。" },
-  { name: "出几道题考考我", prompt: "根据我正在读的这一章出三道题考我，先只出题，等我回答后再讲解。" },
 ];
 /** 故事类的书（默认开防剧透的那些）问人物和伏笔；资料、文档问概念和上下文 */
 const QUICK_STORY: typeof QUICK = [
@@ -133,6 +138,9 @@ export function Reader({
   onLocation,
   onClose,
   onSelection,
+  learn,
+  onQuiz,
+  onReview,
   onAsk,
   onOpenPart,
   onInfo,
@@ -167,6 +175,11 @@ export function Reader({
   const footnoteView = useRef<FoliateView | null>(null);
   const [showQuick, setShowQuick] = useState(false);
   const [showGraph, setShowGraph] = useState(false);
+  /** 这一篇分成的段、每段考没考过；读完一段没考过的，在页面底下问一句要不要考 */
+  const [quizUnits, setQuizUnits] = useState<QuizUnit[]>([]);
+  const [nudge, setNudge] = useState<number | null>(null);
+  const lastUnit = useRef<number | null>(null);
+  const skipped = useRef(new Set<number>());
   /** 前情提要：隔了一阵再打开读到一半的书，自己弹出来；也可以从一键动作里叫 */
   const [showRecap, setShowRecap] = useState(
     () => doc.readAt != null && Date.now() - doc.readAt * 1000 > RECAP_AFTER_MS && (doc.progress ?? 0) > 0.03 && (doc.progress ?? 0) < 0.97,
@@ -865,6 +878,26 @@ export function Reader({
   );
   /** 此刻在第几页 / 第几节（没有页码的格式是 null） */
   const livePage = (fixed || doc.kind === "epub") && loc?.section ? loc.section.current + 1 : null;
+  useEffect(() => {
+    void api.quizUnits(doc.id).then(setQuizUnits, () => {});
+    // learn 变了说明刚答过题：哪些段考过了要重新取
+  }, [doc.id, learn, rev]);
+  /** 此刻在第几段：有页码按页比，没有按位置比（和透视、防剧透是同一条规则） */
+  const unitHere = useMemo(() => {
+    const f = loc?.fraction ?? 0;
+    const hit = [...quizUnits].reverse().find((u) => (u.page != null && livePage != null ? u.page <= livePage : u.start <= f + 1e-6));
+    return hit?.unit ?? null;
+  }, [quizUnits, loc?.fraction, livePage]);
+  useEffect(() => {
+    if (unitHere == null) return;
+    const prev = lastUnit.current;
+    lastUnit.current = unitHere;
+    // 往后读进了下一段（不是跳着翻）：上一段算读完了。故事类的书不主动考
+    const done = prev != null && unitHere === prev + 1 ? prev : unitHere === quizUnits.length - 1 && (loc?.fraction ?? 0) >= 0.995 ? unitHere : null;
+    if (done == null || book.spoilerFree || skipped.current.has(done)) return;
+    if (!quizUnits.find((u) => u.unit === done)?.quizzed) setNudge(done);
+  }, [unitHere, quizUnits, loc?.fraction, book.spoilerFree]);
+
   const seenUnits = useMemo(() => visibleUnits(xray, bounds), [xray, bounds]);
   const figures = useMemo(() => figuresOf(seenUnits), [seenUnits]);
   /** 前情提要的材料：不管这本书开没开防剧透，都只用读过的那些段 */
@@ -1108,6 +1141,30 @@ export function Reader({
 
         <div className="relative min-w-0 flex-1" style={{ background: fixed ? undefined : theme.bg }}>
           <div ref={stage} className={`reader-stage absolute inset-0 ${fixed ? "reader-fixed" : ""}`} />
+          {nudge != null && draft == null && (
+            <div data-floating className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border border-hairline-strong bg-surface-2 py-1.5 pl-4 pr-1.5 text-[12.5px] text-text shadow-[0_8px_28px_-8px_rgb(0_0_0/0.35)]">
+              这一段读完了，考你几道题？
+              <button
+                className="rounded-full bg-accent px-3 py-1 text-[12.5px] text-white hover:bg-accent-2"
+                onClick={() => {
+                  onQuiz(nudge);
+                  setNudge(null);
+                }}
+              >
+                开始
+              </button>
+              <button
+                className="grid h-6 w-6 place-items-center rounded-full text-text-3 hover:bg-nav-card hover:text-text"
+                aria-label="这一段不考"
+                onClick={() => {
+                  skipped.current.add(nudge);
+                  setNudge(null);
+                }}
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
           {showRecap && draft == null && (
             <RecapCard book={book} docId={doc.id} fraction={loc?.fraction ?? doc.progress ?? 0} notes={recapSource} onClose={() => setShowRecap(false)} />
           )}
@@ -1236,6 +1293,7 @@ export function Reader({
           units={seenUnits}
           figures={figures}
           hidden={xray.units.length - seenUnits.length}
+          learn={learn}
           onClose={() => setShowGraph(false)}
           onGoQuote={goQuote}
           onAskAbout={askAbout}
@@ -1258,7 +1316,31 @@ export function Reader({
           >
             前情提要
           </button>
-          {[QUICK[0], ...(book.spoilerFree ? QUICK_STORY : QUICK_DOC), QUICK[1]].map((q) => (
+          <button
+            role="menuitem"
+            className="block w-full rounded-lg px-2.5 py-1.5 text-left text-[13px] text-text-2 hover:bg-nav-card hover:text-text disabled:opacity-40"
+            disabled={unitHere == null}
+            onClick={() => {
+              setShowQuick(false);
+              setNudge(null);
+              if (unitHere != null) onQuiz(unitHere);
+            }}
+          >
+            考考我这一段
+          </button>
+          {(learn?.due ?? 0) > 0 && (
+            <button
+              role="menuitem"
+              className="block w-full rounded-lg px-2.5 py-1.5 text-left text-[13px] text-text-2 hover:bg-nav-card hover:text-text"
+              onClick={() => {
+                setShowQuick(false);
+                onReview();
+              }}
+            >
+              复习到期的 <span className="num text-accent">{learn?.due}</span> 个概念
+            </button>
+          )}
+          {[QUICK[0], ...(book.spoilerFree ? QUICK_STORY : QUICK_DOC)].map((q) => (
             <button
               key={q.name}
               role="menuitem"

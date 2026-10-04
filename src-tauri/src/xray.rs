@@ -175,7 +175,7 @@ pub fn plan(conn: &Connection, doc_id: &str, kind: &str) -> Result<Vec<Unit>> {
 }
 
 /// 一段的文字：它那几个片段按顺序接起来
-fn unit_text(conn: &Connection, doc_id: &str, unit: &Unit) -> Result<String> {
+pub(crate) fn unit_text(conn: &Connection, doc_id: &str, unit: &Unit) -> Result<String> {
     let mut stmt = conn
         .prepare("SELECT text FROM chunks WHERE doc_id = ?1 ORDER BY idx, id LIMIT ?2 OFFSET ?3")?;
     let texts: Vec<String> = stmt

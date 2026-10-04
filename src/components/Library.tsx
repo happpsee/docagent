@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FilePlus2, FolderPlus, MessageSquare, MoreHorizontal, Plus, Search } from "lucide-react";
+import { FilePlus2, FolderPlus, MessageSquare, MoreHorizontal, Plus, Search, GraduationCap } from "lucide-react";
 import * as api from "@/lib/api";
-import type { Book } from "@/lib/types";
+import type { Book, LearnOverview } from "@/lib/types";
 
 export const IMPORT_EXTENSIONS = ["pdf", "epub", "mobi", "azw3", "azw", "fb2", "fbz", "cbz", "docx", "md", "markdown", "txt"];
 
@@ -20,6 +20,10 @@ interface Props {
   onPickCover: (book: Book) => void;
   onReveal: (book: Book) => void;
   onRemove: (book: Book) => void;
+  /** 每本书学得怎么样（只有考过题的书） */
+  learn: Map<string, LearnOverview>;
+  /** 开始复习：null 是所有书到期的一起 */
+  onReview: (bookId: string | null) => void;
 }
 
 /** 书架：应用的首页。一张卡片是一本书——一个文件，或者一个文件夹里的若干篇。 */
@@ -28,6 +32,8 @@ export function Library(p: Props) {
   const [sort, setSort] = useState<Sort>("recent");
   const [adding, setAdding] = useState(false);
   /** 哪本书的菜单开着，以及开在哪 */
+  const dueBooks = p.books.filter((b) => (p.learn.get(b.id)?.due ?? 0) > 0);
+  const dueTotal = dueBooks.reduce((n, b) => n + (p.learn.get(b.id)?.due ?? 0), 0);
   const [menu, setMenu] = useState<{ book: Book; x: number; y: number } | null>(null);
 
   const reading = useMemo(
@@ -159,6 +165,21 @@ export function Library(p: Props) {
         </header>
         {p.progress && <div className="arc-shimmer-text mt-3 text-[12px]">{p.progress}</div>}
 
+        {dueTotal > 0 && !query && (
+          <div className="mt-6 flex items-center gap-3 rounded-xl border border-hairline bg-surface-2 px-4 py-3">
+            <GraduationCap className="h-5 w-5 shrink-0 text-accent" />
+            <div className="min-w-0 flex-1">
+              <div className="text-[13px] font-medium text-text">今天该复习 {dueTotal} 个概念</div>
+              <div className="mt-0.5 truncate text-[12px] text-text-4">
+                {dueBooks.map((b) => `《${b.title}》${p.learn.get(b.id)?.due}`).join(" · ")}　几分钟就够，不复习掌握度会往下掉
+              </div>
+            </div>
+            <button className="shrink-0 rounded-lg bg-accent px-3.5 py-1.5 text-[13px] text-white hover:bg-accent-2" onClick={() => p.onReview(null)}>
+              开始复习
+            </button>
+          </div>
+        )}
+
         {reading.length > 0 && !query && (
           <>
             <h2 className="mt-8 text-[12px] font-medium text-text-3">继续读</h2>
@@ -212,6 +233,11 @@ export function Library(p: Props) {
                 )}
                 {b.progress != null && b.progress > 0.005 && (
                   <span className="num shrink-0">{b.progress >= 0.995 ? "读完" : `${Math.round(b.progress * 100)}%`}</span>
+                )}
+                {p.learn.has(b.id) && (
+                  <span className="num shrink-0 text-good" title="学会了多少：按每个概念现在还记得的程度算，不复习会往下掉">
+                    学会 {Math.round((p.learn.get(b.id)?.learned ?? 0) * 100)}%
+                  </span>
                 )}
                 {/* 一直看得见（淡一点），不是悬停才出现：换封面、移除都从这里进 */}
                 <button
