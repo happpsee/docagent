@@ -146,6 +146,8 @@ export interface QuizUnit {
   quizzed: boolean;
   /** 这一段考的概念掌握得怎么样（0–1）；没出过题是 null */
   mastery: number | null;
+  /** 这一段多少字：用来估「读一遍至少要多久」 */
+  chars?: number;
 }
 export interface LearnConcept {
   concept: string;

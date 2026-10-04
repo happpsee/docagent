@@ -1,5 +1,6 @@
 import type { LearnOverview, QuizUnit, XRayUnit } from "@/lib/types";
 import { colorCode } from "./codeColor";
+import { useReadTracker } from "./readTime";
 import { GraphView } from "./Graph";
 import { RECAP_AFTER_MS, RecapCard, recapNotes } from "./Recap";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -181,7 +182,7 @@ export function Reader({
   /** 这一篇分成的段、每段考没考过；读完一段没考过的，在页面底下问一句要不要考 */
   const [quizUnits, setQuizUnits] = useState<QuizUnit[]>([]);
   const [nudge, setNudge] = useState<number | null>(null);
-  const lastUnit = useRef<number | null>(null);
+  const touchRef = useRef<() => void>(() => {});
   const skipped = useRef(new Set<number>());
   /** 前情提要：隔了一阵再打开读到一半的书，自己弹出来；也可以从一键动作里叫 */
   const [showRecap, setShowRecap] = useState(
@@ -391,6 +392,8 @@ export function Reader({
             setShowPrefs(false);
           });
           d.addEventListener("keydown", onKey);
+          // 有动作才算在读（开着书去干别的不计时）
+          for (const ev of ["pointermove", "pointerdown", "keydown", "wheel"] as const) d.addEventListener(ev, () => touchRef.current(), { passive: true });
           if (!v.isFixedLayout) colorCode(d);
           // 翻页模式下滚轮也能翻页（有节流，触控板一次滑动只翻一页）
           let lastTurn = 0;
@@ -891,15 +894,18 @@ export function Reader({
     const hit = [...quizUnits].reverse().find((u) => (u.page != null && livePage != null ? u.page <= livePage : u.start <= f + 1e-6));
     return hit?.unit ?? null;
   }, [quizUnits, loc?.fraction, livePage]);
+  // 读没读过看的是在这一段上实际停留了多久、是不是各部分都看到过——翻过去不算
+  const { read: readUnits, touch, secondsOn } = useReadTracker(doc.id, quizUnits, { unit: unitHere, fraction: loc?.fraction ?? 0 });
+  touchRef.current = touch;
   useEffect(() => {
-    if (unitHere == null) return;
-    const prev = lastUnit.current;
-    lastUnit.current = unitHere;
-    // 往后读进了下一段（不是跳着翻）：上一段算读完了。故事类的书不主动考
-    const done = prev != null && unitHere === prev + 1 ? prev : unitHere === quizUnits.length - 1 && (loc?.fraction ?? 0) >= 0.995 ? unitHere : null;
-    if (done == null || book.spoilerFree || skipped.current.has(done)) return;
-    if (!quizUnits.find((u) => u.unit === done)?.quizzed) setNudge(done);
-  }, [unitHere, quizUnits, loc?.fraction, book.spoilerFree]);
+    if (unitHere == null || book.spoilerFree) return;
+    // 刚读完的那一段：读过了，而且人已经往后走了（进了下一段，或者到了这一篇的末尾）
+    const atEnd = unitHere === quizUnits.length - 1 && (loc?.fraction ?? 0) >= 0.98;
+    const done = atEnd ? unitHere : unitHere - 1;
+    const u = quizUnits.find((x) => x.unit === done);
+    if (!u || u.quizzed || skipped.current.has(done) || !readUnits.has(done)) return;
+    setNudge(done);
+  }, [unitHere, quizUnits, readUnits, loc?.fraction, book.spoilerFree]);
 
   const seenUnits = useMemo(() => visibleUnits(xray, bounds), [xray, bounds]);
   const figures = useMemo(() => figuresOf(seenUnits), [seenUnits]);
@@ -1146,7 +1152,7 @@ export function Reader({
           <div ref={stage} className={`reader-stage absolute inset-0 ${fixed ? "reader-fixed" : ""}`} />
           {nudge != null && draft == null && (
             <div data-floating className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border border-hairline-strong bg-surface-2 py-1.5 pl-4 pr-1.5 text-[12.5px] text-text shadow-[0_8px_28px_-8px_rgb(0_0_0/0.35)]">
-              这一段读完了，考你几道题？
+              这一段你读了 {Math.max(1, Math.round(secondsOn(nudge) / 60))} 分钟，考你几道题？
               <button
                 className="rounded-full bg-accent px-3 py-1 text-[12.5px] text-white hover:bg-accent-2"
                 onClick={() => {
@@ -1293,7 +1299,7 @@ export function Reader({
           {quizUnits.length > 1 && quizUnits.some((u) => u.quizzed) && (
             <div className="pointer-events-none absolute inset-x-0 -bottom-0.5 flex h-[3px] gap-px" aria-hidden>
               {quizUnits.map((u) => {
-                const read = u.end <= seen.fraction + 1e-6;
+                const read = readUnits.has(u.unit);
                 const color = u.mastery == null ? (read ? "#8a878055" : "#8a878022") : u.mastery >= 0.85 ? "#4f8a5b" : u.mastery >= 0.5 ? "#c9952a" : "#c2603c";
                 return <span key={u.unit} className="rounded-full" style={{ flexGrow: Math.max(0.001, u.end - u.start), background: color }} />;
               })}

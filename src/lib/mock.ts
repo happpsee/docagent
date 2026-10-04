@@ -191,7 +191,7 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
   if (cmd === "test_embedding") return 1024 as T;
   if (cmd === "list_sessions") return structuredClone(sessions) as T;
   if (cmd === "quiz_units")
-    return (args?.docId === "d4" ? xray.units.map((u, i) => ({ unit: u.unit, page: u.page, start: u.start, end: u.end, quizzed: i < 2, mastery: i === 0 ? 0.9 : i === 1 ? 0.3 : null })) : []) as T;
+    return (args?.docId === "d4" ? xray.units.map((u, i) => ({ unit: u.unit, page: u.page, start: u.start, end: u.end, quizzed: i < 2, chars: 1200, mastery: i === 0 ? 0.9 : i === 1 ? 0.3 : null })) : []) as T;
   if (cmd === "quiz_unit" || cmd === "quiz_due") return quizItems as T;
   if (cmd === "quiz_variant") return (quizItems.find((i) => i.id === args?.itemId) ?? quizItems[0]) as T;
   if (cmd === "quiz_answer")

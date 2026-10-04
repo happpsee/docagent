@@ -630,6 +630,8 @@ pub struct QuizUnit {
     start: f64,
     end: f64,
     quizzed: bool,
+    /// 这一段多少字
+    chars: i64,
     /// 这一段考的概念掌握得怎么样（0–1）；没出过题是 null
     mastery: Option<f64>,
 }
@@ -648,6 +650,10 @@ pub fn quiz_units(state: State<'_, AppState>, doc_id: String) -> Result<Vec<Quiz
         .and_then(|rows| rows.collect())
         .map_err(|err| err.to_string())?;
     let mastery = crate::learn::unit_mastery(&conn, &doc_id, db::now()).map_err(e)?;
+    let lengths: Vec<i64> = conn
+        .prepare("SELECT length(text) FROM chunks WHERE doc_id = ?1 ORDER BY idx, id")
+        .and_then(|mut stmt| stmt.query_map([&doc_id], |r| r.get(0))?.collect())
+        .map_err(|err| err.to_string())?;
     Ok(crate::xray::plan(&conn, &doc_id, &part.kind)
         .map_err(e)?
         .into_iter()
@@ -657,6 +663,7 @@ pub fn quiz_units(state: State<'_, AppState>, doc_id: String) -> Result<Vec<Quiz
             start: u.start,
             end: u.end,
             quizzed: done.contains(&u.index),
+            chars: lengths.get(u.first..u.upto.min(lengths.len())).map(|s| s.iter().sum()).unwrap_or(0),
             mastery: mastery.get(&u.index).copied(),
         })
         .collect())

@@ -36,8 +36,8 @@ pub struct Unit {
     pub start: f64,
     pub end: f64,
     /// 这一段是那一篇的第几个片段到第几个片段（不含 upto）
-    first: usize,
-    upto: usize,
+    pub(crate) first: usize,
+    pub(crate) upto: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
