@@ -20,6 +20,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+
+      # cargo clippy / cargo test 会触发 Tauri 的构建脚本，它在编译期就要求
+      # externalBin（src-tauri/binaries）存在；而那个目录在 .gitignore 里，
+      # 刚检出的仓库没有它，直接跑会以
+      #   resource path `binaries/docagent-agent-<triple>` doesn't exist
+      # 失败。所以这里先把智能体进程编出来。
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: 安装智能体进程依赖
+        working-directory: sidecar
+        run: bun install
+      - name: 编译智能体进程
+        working-directory: sidecar
+        shell: bash
+        run: |
+          mkdir -p ../src-tauri/binaries
+          bun build --compile --minify --bytecode \
+            --outfile ../src-tauri/binaries/docagent-agent-$(rustc -vV | sed -n "s/host: //p") \
+            agent.ts
+
       - run: cargo fmt --all -- --check
         working-directory: src-tauri
       - run: cargo clippy --all-targets -- -D warnings
