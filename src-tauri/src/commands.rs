@@ -695,7 +695,10 @@ pub fn quiz_units(state: State<'_, AppState>, doc_id: String) -> Result<Vec<Quiz
             start: u.start,
             end: u.end,
             quizzed: done.contains(&u.index),
-            chars: lengths.get(u.first..u.upto.min(lengths.len())).map(|s| s.iter().sum()).unwrap_or(0),
+            chars: lengths
+                .get(u.first..u.upto.min(lengths.len()))
+                .map(|s| s.iter().sum())
+                .unwrap_or(0),
             mastery: mastery.get(&u.index).copied(),
         })
         .collect())
@@ -719,7 +722,10 @@ pub fn quiz_unit(
             .map_err(e)?
             .ok_or("这一篇不在书架上了")?;
         let plan = crate::xray::plan(&conn, &doc_id, &part.kind).map_err(e)?;
-        let u = plan.iter().find(|u| u.index == unit).ok_or("找不到这一段")?;
+        let u = plan
+            .iter()
+            .find(|u| u.index == unit)
+            .ok_or("找不到这一段")?;
         let text = crate::xray::unit_text(&conn, &doc_id, u).map_err(e)?;
         // 透视过的段：题目考的概念沿用透视里的名字，掌握度才能落到关系图的同一个点上
         let concepts: Vec<String> = conn
@@ -777,7 +783,9 @@ pub fn quiz_answer(
 ) -> Result<QuizResult, String> {
     let item = {
         let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
-        crate::learn::item(&conn, item_id).map_err(e)?.ok_or("这道题不在了")?
+        crate::learn::item(&conn, item_id)
+            .map_err(e)?
+            .ok_or("这道题不在了")?
     };
     let verdict = if answer.trim().is_empty() {
         crate::learn::Verdict {
@@ -801,7 +809,8 @@ pub fn quiz_answer(
     };
     let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
     let now = db::now();
-    let due = crate::learn::apply(&conn, &item.book_id, &item.concept, verdict.grade, now).map_err(e)?;
+    let due =
+        crate::learn::apply(&conn, &item.book_id, &item.concept, verdict.grade, now).map_err(e)?;
     crate::learn::log_review(&conn, &item, answer.trim(), &verdict, now).map_err(e)?;
     crate::learn::note_verdict(&conn, &item, answer.trim(), &verdict, now).map_err(e)?;
     Ok(QuizResult {
@@ -815,14 +824,20 @@ pub fn quiz_answer(
 /// 复习时换个问法：这道题答过了，就给同一个概念另一道——没攒够就现出一道新的，攒够了在已有的里轮着问。
 /// 没答过的原样返回。出不成新题不算错，退回原题
 #[tauri::command(async)]
-pub fn quiz_variant(state: State<'_, AppState>, item_id: i64) -> Result<crate::learn::Item, String> {
+pub fn quiz_variant(
+    state: State<'_, AppState>,
+    item_id: i64,
+) -> Result<crate::learn::Item, String> {
     let (item, text, asked, wrong) = {
         let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
-        let item = crate::learn::item(&conn, item_id).map_err(e)?.ok_or("这道题不在了")?;
+        let item = crate::learn::item(&conn, item_id)
+            .map_err(e)?
+            .ok_or("这道题不在了")?;
         if !crate::learn::answered(&conn, item_id).map_err(e)? {
             return Ok(item);
         }
-        let all = crate::learn::items_for_concept(&conn, &item.book_id, &item.concept).map_err(e)?;
+        let all =
+            crate::learn::items_for_concept(&conn, &item.book_id, &item.concept).map_err(e)?;
         if all.len() >= crate::learn::MAX_PER_CONCEPT {
             return Ok(crate::learn::stalest(&conn, &item.book_id, &item.concept)
                 .map_err(e)?
@@ -836,7 +851,11 @@ pub fn quiz_variant(state: State<'_, AppState>, item_id: i64) -> Result<crate::l
             .and_then(|u| crate::xray::unit_text(&conn, &item.doc_id, &u).ok())
             .unwrap_or_default();
         // 原文变了（重新导入后分段不一样了）：依据都对不上，就别出新题了
-        if !text.split_whitespace().collect::<String>().contains(&item.evidence.split_whitespace().collect::<String>()) {
+        if !text
+            .split_whitespace()
+            .collect::<String>()
+            .contains(&item.evidence.split_whitespace().collect::<String>())
+        {
             return Ok(item);
         }
         let asked: Vec<String> = all.into_iter().map(|i| i.question).collect();
@@ -860,11 +879,21 @@ pub fn quiz_variant(state: State<'_, AppState>, item_id: i64) -> Result<crate::l
     // 概念名以原来的为准：模型换了个写法的话，掌握度就记到另一个点上去了
     fresh[0].concept = item.concept.clone();
     let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
-    crate::learn::save_items(&conn, &item.book_id, &item.doc_id, item.unit, &fresh, db::now()).map_err(e)?;
-    Ok(crate::learn::items_for_concept(&conn, &item.book_id, &item.concept)
-        .map_err(e)?
-        .pop()
-        .unwrap_or(item))
+    crate::learn::save_items(
+        &conn,
+        &item.book_id,
+        &item.doc_id,
+        item.unit,
+        &fresh,
+        db::now(),
+    )
+    .map_err(e)?;
+    Ok(
+        crate::learn::items_for_concept(&conn, &item.book_id, &item.concept)
+            .map_err(e)?
+            .pop()
+            .unwrap_or(item),
+    )
 }
 
 /// 到了一个决策点：让模型决定要不要打断读者、提什么建议。能不能来问（频率）由界面先把关
@@ -877,7 +906,9 @@ pub fn coach_decide(
     let prompt = {
         let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
         let title: String = conn
-            .query_row("SELECT title FROM books WHERE id = ?1", [&book_id], |r| r.get(0))
+            .query_row("SELECT title FROM books WHERE id = ?1", [&book_id], |r| {
+                r.get(0)
+            })
             .map_err(|err| err.to_string())?;
         crate::coach::prompt(&conn, &book_id, &title, &signal, db::now()).map_err(e)?
     };
@@ -906,7 +937,12 @@ pub fn quiz_concept(
 
 /// 忽略 / 恢复一个概念：忽略的不提醒复习，也不算进「学会了多少」
 #[tauri::command(async)]
-pub fn learn_ignore(state: State<'_, AppState>, book_id: String, concept: String, on: bool) -> Result<(), String> {
+pub fn learn_ignore(
+    state: State<'_, AppState>,
+    book_id: String,
+    concept: String,
+    on: bool,
+) -> Result<(), String> {
     let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
     crate::learn::set_ignored(&conn, &book_id, &concept, on, db::now()).map_err(e)
 }
@@ -919,7 +955,12 @@ pub fn learner_notes(state: State<'_, AppState>) -> Result<Vec<crate::learn::Lea
 }
 
 #[tauri::command(async)]
-pub fn learner_note_save(state: State<'_, AppState>, id: Option<i64>, kind: String, content: String) -> Result<(), String> {
+pub fn learner_note_save(
+    state: State<'_, AppState>,
+    id: Option<i64>,
+    kind: String,
+    content: String,
+) -> Result<(), String> {
     let content = content.trim();
     if content.is_empty() {
         return Err("内容是空的".to_string());
@@ -936,7 +977,11 @@ pub fn learner_note_delete(state: State<'_, AppState>, id: i64) -> Result<(), St
 
 /// 这一程读下来的小结：since 是打开这本书的时刻（秒）
 #[tauri::command(async)]
-pub fn reading_trip(state: State<'_, AppState>, book_id: String, since: i64) -> Result<crate::learn::Trip, String> {
+pub fn reading_trip(
+    state: State<'_, AppState>,
+    book_id: String,
+    since: i64,
+) -> Result<crate::learn::Trip, String> {
     let conn = state.conn.lock().map_err(|_| LOCK.to_string())?;
     crate::learn::trip(&conn, &book_id, since).map_err(e)
 }
@@ -1022,7 +1067,9 @@ pub fn recap(
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default();
         let title: String = conn
-            .query_row("SELECT title FROM books WHERE id = ?1", [&book_id], |r| r.get(0))
+            .query_row("SELECT title FROM books WHERE id = ?1", [&book_id], |r| {
+                r.get(0)
+            })
             .map_err(|err| err.to_string())?;
         let text = if notes.trim().is_empty() {
             crate::recap::text_before(&conn, &doc_id, fraction).map_err(e)?

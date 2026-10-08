@@ -44,20 +44,46 @@ pub struct Decision {
 }
 
 /// 这一段考过的概念和它们现在的掌握情况
-fn unit_concepts(conn: &Connection, book_id: &str, doc_id: &str, unit: i64, now: i64) -> Result<Vec<String>> {
+fn unit_concepts(
+    conn: &Connection,
+    book_id: &str,
+    doc_id: &str,
+    unit: i64,
+    now: i64,
+) -> Result<Vec<String>> {
     let overview = learn::overview(conn, book_id, now)?;
-    let mut stmt = conn.prepare("SELECT DISTINCT concept FROM quiz_items WHERE doc_id = ?1 AND unit = ?2")?;
-    let names: Vec<String> = stmt.query_map(params![doc_id, unit], |r| r.get(0))?.collect::<Result<_, _>>()?;
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT concept FROM quiz_items WHERE doc_id = ?1 AND unit = ?2")?;
+    let names: Vec<String> = stmt
+        .query_map(params![doc_id, unit], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
     Ok(names
         .into_iter()
-        .map(|n| match overview.concepts.iter().find(|c| c.concept == n) {
-            Some(c) if c.reps > 0 => format!("{n}（考过 {} 次，现在记得 {}%{}）", c.reps, (c.mastery * 100.0).round(), if c.last_grade == "lapsed" { "，上次没答上来" } else { "" }),
-            _ => format!("{n}（没考过）"),
-        })
+        .map(
+            |n| match overview.concepts.iter().find(|c| c.concept == n) {
+                Some(c) if c.reps > 0 => format!(
+                    "{n}（考过 {} 次，现在记得 {}%{}）",
+                    c.reps,
+                    (c.mastery * 100.0).round(),
+                    if c.last_grade == "lapsed" {
+                        "，上次没答上来"
+                    } else {
+                        ""
+                    }
+                ),
+                _ => format!("{n}（没考过）"),
+            },
+        )
         .collect())
 }
 
-pub fn prompt(conn: &Connection, book_id: &str, title: &str, s: &Signal, now: i64) -> Result<String> {
+pub fn prompt(
+    conn: &Connection,
+    book_id: &str,
+    title: &str,
+    s: &Signal,
+    now: i64,
+) -> Result<String> {
     let overview = learn::overview(conn, book_id, now)?;
     let concepts = unit_concepts(conn, book_id, &s.doc_id, s.unit, now)?;
     let wrong: Vec<String> = learn::notes(conn)?
@@ -66,7 +92,11 @@ pub fn prompt(conn: &Connection, book_id: &str, title: &str, s: &Signal, now: i6
         .take(8)
         .map(|n| format!("- {}", n.content))
         .collect();
-    let what = if s.why == "stuck" { "在这一段上停了很久，还没翻过去" } else { "刚读完这一段，翻到了下一段" };
+    let what = if s.why == "stuck" {
+        "在这一段上停了很久，还没翻过去"
+    } else {
+        "刚读完这一段，翻到了下一段"
+    };
     Ok(format!(
         "读者在读《{title}》，{what}。\n\
          【这一段】{} 字；实际停留 {} 秒（快速浏览一遍大约要 {} 秒）；往回翻了 {} 次；划了 {} 句；就这一段问过助手 {} 次。\n\
@@ -102,12 +132,26 @@ pub fn parse(reply: &str) -> Result<Decision> {
         "quiz" | "explain" | "review" | "none" => action,
         other => anyhow::bail!("看不懂的动作：{other}"),
     };
-    let message: String = v["message"].as_str().unwrap_or("").trim().chars().take(60).collect();
+    let message: String = v["message"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(60)
+        .collect();
     // 要打断却没说为什么：当成不打断
-    let action = if action != "none" && message.is_empty() { "none" } else { action };
+    let action = if action != "none" && message.is_empty() {
+        "none"
+    } else {
+        action
+    };
     Ok(Decision {
         action: action.to_string(),
-        message: if action == "none" { String::new() } else { message },
+        message: if action == "none" {
+            String::new()
+        } else {
+            message
+        },
         reason: v["reason"].as_str().unwrap_or("").trim().to_string(),
     })
 }
@@ -118,10 +162,25 @@ mod tests {
 
     #[test]
     fn 决定_动作不认识报错_没说理由的当成不打断() {
-        let d = parse(r#"{"action":"quiz","message":"这段你读得很细，考两道？","reason":"停留充分"}"#).unwrap();
-        assert_eq!((d.action.as_str(), d.message.as_str()), ("quiz", "这段你读得很细，考两道？"));
-        assert_eq!(parse(r#"{"action":"explain","message":""}"#).unwrap().action, "none");
-        assert_eq!(parse(r#"{"action":"none","message":"随便说点"}"#).unwrap().message, "");
+        let d =
+            parse(r#"{"action":"quiz","message":"这段你读得很细，考两道？","reason":"停留充分"}"#)
+                .unwrap();
+        assert_eq!(
+            (d.action.as_str(), d.message.as_str()),
+            ("quiz", "这段你读得很细，考两道？")
+        );
+        assert_eq!(
+            parse(r#"{"action":"explain","message":""}"#)
+                .unwrap()
+                .action,
+            "none"
+        );
+        assert_eq!(
+            parse(r#"{"action":"none","message":"随便说点"}"#)
+                .unwrap()
+                .message,
+            ""
+        );
         assert!(parse(r#"{"action":"弹窗"}"#).is_err());
     }
 }

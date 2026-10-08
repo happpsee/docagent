@@ -10,24 +10,24 @@
 pub mod agent;
 pub mod books;
 pub mod chunk;
+pub mod coach;
 pub mod commands;
 pub mod db;
 pub mod ebook;
 pub mod embed;
 pub mod fts;
 pub mod import;
+pub mod learn;
 pub mod llm;
 pub mod markup;
 pub mod migrate;
 pub mod natural;
 pub mod parse;
+pub mod recap;
 pub mod render;
 pub mod search;
 pub mod server;
 pub mod spoiler;
-pub mod coach;
-pub mod learn;
-pub mod recap;
 pub mod xray;
 
 use std::path::PathBuf;

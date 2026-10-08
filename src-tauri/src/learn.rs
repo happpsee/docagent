@@ -70,7 +70,10 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS quiz_skipped_marks (annotation_id TEXT PRIMARY KEY);",
     )?;
     // 后来加的列：老库补上（已经有了会报重复，忽略）
-    let _ = conn.execute("ALTER TABLE concept_state ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute(
+        "ALTER TABLE concept_state ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
     let _ = conn.execute("ALTER TABLE quiz_items ADD COLUMN annotation_id TEXT", []);
     Ok(())
 }
@@ -150,7 +153,12 @@ pub fn gen_prompt(text: &str, concepts: &[String]) -> String {
 }
 
 /// 复习时换个问法：同一个概念、同一段原文，避开已经问过的角度，只出一道
-pub fn variant_prompt(text: &str, concept: &str, asked: &[String], misconception: Option<&str>) -> String {
+pub fn variant_prompt(
+    text: &str,
+    concept: &str,
+    asked: &[String],
+    misconception: Option<&str>,
+) -> String {
     let mut asked: String = asked.iter().map(|q| format!("- {q}\n")).collect();
     if let Some(m) = misconception {
         asked.push_str(&format!(
@@ -233,7 +241,13 @@ pub fn parse_items(reply: &str, text: &str) -> Result<Vec<NewItem>> {
                     question: str_of(&i["question"]),
                     rubric: i["rubric"]
                         .as_array()
-                        .map(|r| r.iter().map(str_of).filter(|s| !s.is_empty()).take(4).collect())
+                        .map(|r| {
+                            r.iter()
+                                .map(str_of)
+                                .filter(|s| !s.is_empty())
+                                .take(4)
+                                .collect()
+                        })
                         .unwrap_or_default(),
                     evidence: str_of(&i["evidence"]),
                 })
@@ -360,7 +374,13 @@ pub fn parse_verdict(reply: &str, item: &Item) -> Result<Verdict> {
         misconception: if grade == Grade::Recalled {
             String::new()
         } else {
-            v["misconception"].as_str().unwrap_or("").trim().chars().take(120).collect()
+            v["misconception"]
+                .as_str()
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .take(120)
+                .collect()
         },
     })
 }
@@ -417,7 +437,13 @@ fn retrievability(stability: f64, last_review: i64, now: i64) -> f64 {
 }
 
 /// 记一次作答：更新这个概念的记忆状态，返回下次复习的时间
-pub fn apply(conn: &Connection, book_id: &str, concept: &str, grade: Grade, now: i64) -> Result<i64> {
+pub fn apply(
+    conn: &Connection,
+    book_id: &str,
+    concept: &str,
+    grade: Grade,
+    now: i64,
+) -> Result<i64> {
     let card = load_card(conn, book_id, concept)?.unwrap_or_else(|| Card {
         due: at(now),
         last_review: at(now),
@@ -450,11 +476,26 @@ pub fn apply(conn: &Connection, book_id: &str, concept: &str, grade: Grade, now:
     Ok(due)
 }
 
-pub fn log_review(conn: &Connection, item: &Item, answer: &str, v: &Verdict, now: i64) -> Result<()> {
+pub fn log_review(
+    conn: &Connection,
+    item: &Item,
+    answer: &str,
+    v: &Verdict,
+    now: i64,
+) -> Result<()> {
     conn.execute(
         "INSERT INTO quiz_reviews(item_id, book_id, concept, answer, grade, missing, feedback, at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![item.id, item.book_id, item.concept, answer, v.grade.as_str(), serde_json::to_string(&v.missing)?, v.feedback, now],
+        params![
+            item.id,
+            item.book_id,
+            item.concept,
+            answer,
+            v.grade.as_str(),
+            serde_json::to_string(&v.missing)?,
+            v.feedback,
+            now
+        ],
     )?;
     Ok(())
 }
@@ -528,11 +569,20 @@ pub fn overview(conn: &Connection, book_id: &str, now: i64) -> Result<Overview> 
     let sum: f64 = concepts
         .iter()
         .filter(|c| !c.ignored)
-        .map(|c| if c.last_grade == "lapsed" { 0.0 } else { c.mastery })
+        .map(|c| {
+            if c.last_grade == "lapsed" {
+                0.0
+            } else {
+                c.mastery
+            }
+        })
         .sum();
     Ok(Overview {
         book_id: book_id.to_string(),
-        due: concepts.iter().filter(|c| !c.ignored && c.due <= now).count() as i64,
+        due: concepts
+            .iter()
+            .filter(|c| !c.ignored && c.due <= now)
+            .count() as i64,
         learned: if total > 0 { sum / total as f64 } else { 0.0 },
         total,
         concepts,
@@ -542,12 +592,19 @@ pub fn overview(conn: &Connection, book_id: &str, now: i64) -> Result<Overview> 
 /// 书架上每本书的学习概况（只列考过题的书）
 pub fn overviews(conn: &Connection, now: i64) -> Result<Vec<Overview>> {
     let mut stmt = conn.prepare("SELECT DISTINCT book_id FROM concept_state")?;
-    let ids: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+    let ids: Vec<String> = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
     ids.iter().map(|id| overview(conn, id, now)).collect()
 }
 
 /// 现在该复习的题：每个到期的概念挑一道（最近出的那道）。book_id 为空是所有书
-pub fn due_items(conn: &Connection, book_id: Option<&str>, now: i64, limit: i64) -> Result<Vec<Item>> {
+pub fn due_items(
+    conn: &Connection,
+    book_id: Option<&str>,
+    now: i64,
+    limit: i64,
+) -> Result<Vec<Item>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {ITEM_COLUMNS} FROM quiz_items q
          WHERE id = (SELECT MAX(id) FROM quiz_items WHERE book_id = q.book_id AND concept = q.concept)
@@ -567,7 +624,9 @@ pub fn last_missing(conn: &Connection, book_id: &str) -> Result<HashMap<String, 
          AND id = (SELECT MAX(id) FROM quiz_reviews WHERE book_id = r.book_id AND concept = r.concept)",
     )?;
     let mut out = HashMap::new();
-    for row in stmt.query_map(params![book_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+    for row in stmt.query_map(params![book_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })? {
         let (concept, missing) = row?;
         out.insert(concept, serde_json::from_str(&missing).unwrap_or_default());
     }
@@ -577,7 +636,13 @@ pub fn last_missing(conn: &Connection, book_id: &str) -> Result<HashMap<String, 
 // ---------- 忽略、每段的掌握情况 ----------
 
 /// 忽略 / 恢复一个概念。没考过的概念也能忽略（先占一行）
-pub fn set_ignored(conn: &Connection, book_id: &str, concept: &str, on: bool, now: i64) -> Result<()> {
+pub fn set_ignored(
+    conn: &Connection,
+    book_id: &str,
+    concept: &str,
+    on: bool,
+    now: i64,
+) -> Result<()> {
     seed(conn, book_id, concept, now)?;
     conn.execute(
         "UPDATE concept_state SET ignored = ?3 WHERE book_id = ?1 AND concept = ?2",
@@ -616,7 +681,9 @@ pub fn unit_mastery(conn: &Connection, doc_id: &str, now: i64) -> Result<HashMap
     for row in rows {
         let (unit, stability, last, grade, reps) = row?;
         let m = match (stability, last, grade.as_deref(), reps) {
-            (Some(s), Some(l), Some(g), Some(n)) if n > 0 && g != "lapsed" => retrievability(s, l, now),
+            (Some(s), Some(l), Some(g), Some(n)) if n > 0 && g != "lapsed" => {
+                retrievability(s, l, now)
+            }
             _ => 0.0,
         };
         let e = sums.entry(unit).or_insert((0.0, 0.0));
@@ -663,7 +730,13 @@ pub fn notes(conn: &Connection) -> Result<Vec<LearnerNote>> {
 }
 
 /// 用户自己写一条，或者改一条（改过的就算他自己的了，之后批改不会再覆盖它）
-pub fn save_note(conn: &Connection, id: Option<i64>, kind: &str, content: &str, now: i64) -> Result<()> {
+pub fn save_note(
+    conn: &Connection,
+    id: Option<i64>,
+    kind: &str,
+    content: &str,
+    now: i64,
+) -> Result<()> {
     match id {
         Some(id) => conn.execute(
             "UPDATE learner_notes SET kind = ?2, content = ?3, auto = 0, updated_at = ?4 WHERE id = ?1",
@@ -684,7 +757,14 @@ pub fn delete_note(conn: &Connection, id: i64) -> Result<()> {
 
 /// 助手在对话里记下 / 改写的一条（auto = 1：是它观察到的，不是用户自己写的）。
 /// 一模一样的话不重复记；改用户自己写过的那条时，仍然算用户的
-pub fn agent_note(conn: &Connection, id: Option<i64>, kind: &str, content: &str, evidence: &str, now: i64) -> Result<i64> {
+pub fn agent_note(
+    conn: &Connection,
+    id: Option<i64>,
+    kind: &str,
+    content: &str,
+    evidence: &str,
+    now: i64,
+) -> Result<i64> {
     if let Some(id) = id {
         let n = conn.execute(
             "UPDATE learner_notes SET kind = ?2, content = ?3, evidence = CASE WHEN ?4 = '' THEN evidence ELSE ?4 END, updated_at = ?5 WHERE id = ?1",
@@ -696,7 +776,11 @@ pub fn agent_note(conn: &Connection, id: Option<i64>, kind: &str, content: &str,
         return Ok(id);
     }
     if let Some(had) = conn
-        .query_row("SELECT id FROM learner_notes WHERE content = ?1", params![content], |r| r.get(0))
+        .query_row(
+            "SELECT id FROM learner_notes WHERE content = ?1",
+            params![content],
+            |r| r.get(0),
+        )
         .optional()?
     {
         return Ok(had);
@@ -708,7 +792,13 @@ pub fn agent_note(conn: &Connection, id: Option<i64>, kind: &str, content: &str,
     Ok(conn.last_insert_rowid())
 }
 
-pub const NOTE_KINDS: [&str; 5] = ["background", "preference", "strength", "weakness", "misconception"];
+pub const NOTE_KINDS: [&str; 5] = [
+    "background",
+    "preference",
+    "strength",
+    "weakness",
+    "misconception",
+];
 
 /// 这个概念上记着的误解（自动记的或者用户改过的）
 pub fn misconception(conn: &Connection, book_id: &str, concept: &str) -> Result<Option<String>> {
@@ -723,7 +813,13 @@ pub fn misconception(conn: &Connection, book_id: &str, concept: &str) -> Result<
 }
 
 /// 批改完一题：暴露出误解就记下（同一个概念只留最新的一条自动记录）；这回答对了，之前自动记的那条就算纠正了
-pub fn note_verdict(conn: &Connection, item: &Item, answer: &str, v: &Verdict, now: i64) -> Result<()> {
+pub fn note_verdict(
+    conn: &Connection,
+    item: &Item,
+    answer: &str,
+    v: &Verdict,
+    now: i64,
+) -> Result<()> {
     if v.grade == Grade::Recalled || !v.misconception.is_empty() {
         conn.execute(
             "DELETE FROM learner_notes WHERE auto = 1 AND kind = 'misconception' AND book_id = ?1 AND concept = ?2",
@@ -735,7 +831,13 @@ pub fn note_verdict(conn: &Connection, item: &Item, answer: &str, v: &Verdict, n
         conn.execute(
             "INSERT INTO learner_notes(kind, content, evidence, book_id, concept, auto, updated_at)
              VALUES ('misconception', ?1, ?2, ?3, ?4, 1, ?5)",
-            params![v.misconception, format!("问「{}」时答：{answer}", item.question), item.book_id, item.concept, now],
+            params![
+                v.misconception,
+                format!("问「{}」时答：{answer}", item.question),
+                item.book_id,
+                item.concept,
+                now
+            ],
         )?;
     }
     Ok(())
@@ -762,7 +864,12 @@ pub fn pending_marks(conn: &Connection, book_id: &str, limit: i64) -> Result<Vec
          ORDER BY a.created_at LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![book_id, limit], |r| {
-        Ok(Mark { id: r.get(0)?, doc_id: r.get(1)?, text: r.get(2)?, note: r.get(3)? })
+        Ok(Mark {
+            id: r.get(0)?,
+            doc_id: r.get(1)?,
+            text: r.get(2)?,
+            note: r.get(3)?,
+        })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
 }
@@ -772,11 +879,19 @@ pub fn marks_prompt(marks: &[Mark], concepts: &[String]) -> String {
         .iter()
         .enumerate()
         .map(|(i, m)| {
-            let note = if m.note.trim().is_empty() { String::new() } else { format!("（读者写的想法：{}）", m.note.trim()) };
+            let note = if m.note.trim().is_empty() {
+                String::new()
+            } else {
+                format!("（读者写的想法：{}）", m.note.trim())
+            };
             format!("{}. {}{note}\n", i + 1, m.text.trim())
         })
         .collect();
-    let known = if concepts.is_empty() { String::new() } else { format!("concept 优先用这些已有的名字：{}。", concepts.join("、")) };
+    let known = if concepts.is_empty() {
+        String::new()
+    } else {
+        format!("concept 优先用这些已有的名字：{}。", concepts.join("、"))
+    };
     format!(
         "下面是读者读书时自己划下的句子——他觉得这些重要。给每一句出 1 道简答题，过一阵拿来考他还记不记得、懂不懂。\n\
          要求：\n\
@@ -790,14 +905,28 @@ pub fn marks_prompt(marks: &[Mark], concepts: &[String]) -> String {
 }
 
 /// 模型给划线出的题存下来：依据就是划的那一句，概念进复习队列。返回存了几道
-pub fn save_mark_items(conn: &Connection, book_id: &str, marks: &[Mark], reply: &str, now: i64) -> Result<usize> {
+pub fn save_mark_items(
+    conn: &Connection,
+    book_id: &str,
+    marks: &[Mark],
+    reply: &str,
+    now: i64,
+) -> Result<usize> {
     let v = llm::json_object(reply)?;
     let mut saved = 0;
     for i in v["items"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
-        let Some(mark) = i["n"].as_i64().and_then(|n| marks.get((n - 1).max(0) as usize)) else { continue };
+        let Some(mark) = i["n"]
+            .as_i64()
+            .and_then(|n| marks.get((n - 1).max(0) as usize))
+        else {
+            continue;
+        };
         let concept = i["concept"].as_str().unwrap_or("").trim();
         let question = i["question"].as_str().unwrap_or("").trim();
-        let rubric: Vec<&str> = i["rubric"].as_array().map(|r| r.iter().filter_map(|x| x.as_str()).take(3).collect()).unwrap_or_default();
+        let rubric: Vec<&str> = i["rubric"]
+            .as_array()
+            .map(|r| r.iter().filter_map(|x| x.as_str()).take(3).collect())
+            .unwrap_or_default();
         if concept.is_empty() || question.is_empty() || rubric.is_empty() {
             continue;
         }
@@ -875,7 +1004,8 @@ mod tests {
         conn
     }
 
-    const TEXT: &str = "通知没有 id 字段，\n服务端收到后不会回任何东西。请求带 id，响应用同一个 id 对上。";
+    const TEXT: &str =
+        "通知没有 id 字段，\n服务端收到后不会回任何东西。请求带 id，响应用同一个 id 对上。";
 
     #[test]
     fn 依据对不上原文的题丢掉_换行空格不算() {
@@ -904,7 +1034,11 @@ mod tests {
     fn 批改_序号换回要点_自相矛盾按低的算() {
         let conn = db();
         let item = sample(&conn);
-        let v = parse_verdict(r#"{"missing":[2],"grade":"partial","feedback":"只说了一半"}"#, &item).unwrap();
+        let v = parse_verdict(
+            r#"{"missing":[2],"grade":"partial","feedback":"只说了一半"}"#,
+            &item,
+        )
+        .unwrap();
         assert_eq!(v.grade, Grade::Partial);
         assert_eq!(v.missing, vec!["服务端不回".to_string()]);
         let v = parse_verdict(r#"{"missing":[1,2],"grade":"recalled","feedback":"","misconception":"你把通知当成了请求"}"#, &item).unwrap();
@@ -916,7 +1050,11 @@ mod tests {
     fn 答对了隔得越来越久_掌握度随时间掉_答错当天再来() {
         let conn = db();
         let item = sample(&conn);
-        conn.execute("INSERT INTO xray_units VALUES ('d', ?1)", [r#"[{"name":"通知"},{"name":"请求"}]"#]).unwrap();
+        conn.execute(
+            "INSERT INTO xray_units VALUES ('d', ?1)",
+            [r#"[{"name":"通知"},{"name":"请求"}]"#],
+        )
+        .unwrap();
         let day = 86400;
         let t0 = 1_000_000;
 
@@ -932,15 +1070,37 @@ mod tests {
         let later = overview(&conn, "b", due1 + day).unwrap();
         assert_eq!(later.due, 1);
         assert!(later.learned < o.learned);
-        assert_eq!(due_items(&conn, Some("b"), due1 + day, 10).unwrap(), vec![item.clone()]);
-
+        assert_eq!(
+            due_items(&conn, Some("b"), due1 + day, 10).unwrap(),
+            vec![item.clone()]
+        );
 
         // 这道题答过了；同一个概念再加一道没答过的，轮换时先挑它
-        log_review(&conn, &item, "没有 id", &Verdict { grade: Grade::Recalled, missing: vec![], feedback: String::new(), misconception: String::new() }, t0).unwrap();
+        log_review(
+            &conn,
+            &item,
+            "没有 id",
+            &Verdict {
+                grade: Grade::Recalled,
+                missing: vec![],
+                feedback: String::new(),
+                misconception: String::new(),
+            },
+            t0,
+        )
+        .unwrap();
         assert!(answered(&conn, item.id).unwrap());
-        let other = NewItem { concept: "通知".into(), question: "举个通知的例子".into(), rubric: vec!["不要响应".into()], evidence: "服务端收到后不会回任何东西".into() };
+        let other = NewItem {
+            concept: "通知".into(),
+            question: "举个通知的例子".into(),
+            rubric: vec!["不要响应".into()],
+            evidence: "服务端收到后不会回任何东西".into(),
+        };
         save_items(&conn, "b", "d", 0, &[other], 200).unwrap();
-        assert_eq!(stalest(&conn, "b", "通知").unwrap().unwrap().question, "举个通知的例子");
+        assert_eq!(
+            stalest(&conn, "b", "通知").unwrap().unwrap().question,
+            "举个通知的例子"
+        );
         assert_eq!(items_for_concept(&conn, "b", "通知").unwrap().len(), 2);
 
         // 再答对一次，间隔比第一次长
@@ -957,12 +1117,25 @@ mod tests {
     fn 误解记下来_答对了就划掉_用户改过的不动() {
         let conn = db();
         let item = sample(&conn);
-        let wrong = Verdict { grade: Grade::Partial, missing: vec![], feedback: String::new(), misconception: "你把通知当成了不需要 id 的请求".into() };
+        let wrong = Verdict {
+            grade: Grade::Partial,
+            missing: vec![],
+            feedback: String::new(),
+            misconception: "你把通知当成了不需要 id 的请求".into(),
+        };
         note_verdict(&conn, &item, "通知就是请求", &wrong, 1).unwrap();
         note_verdict(&conn, &item, "还是请求", &wrong, 2).unwrap();
         assert_eq!(notes(&conn).unwrap().len(), 1);
-        assert_eq!(misconception(&conn, "b", "通知").unwrap().as_deref(), Some("你把通知当成了不需要 id 的请求"));
-        let right = Verdict { grade: Grade::Recalled, missing: vec![], feedback: String::new(), misconception: String::new() };
+        assert_eq!(
+            misconception(&conn, "b", "通知").unwrap().as_deref(),
+            Some("你把通知当成了不需要 id 的请求")
+        );
+        let right = Verdict {
+            grade: Grade::Recalled,
+            missing: vec![],
+            feedback: String::new(),
+            misconception: String::new(),
+        };
         note_verdict(&conn, &item, "对了", &right, 3).unwrap();
         assert!(notes(&conn).unwrap().is_empty());
 
@@ -972,10 +1145,20 @@ mod tests {
         save_note(&conn, Some(id), "misconception", "我老把通知和请求弄混", 5).unwrap();
         // 助手在对话里记的：同一句话不重复记，可以按编号改写
         let a = agent_note(&conn, None, "background", "做前端三年", "用户说的", 7).unwrap();
-        assert_eq!(agent_note(&conn, None, "background", "做前端三年", "", 8).unwrap(), a);
+        assert_eq!(
+            agent_note(&conn, None, "background", "做前端三年", "", 8).unwrap(),
+            a
+        );
         agent_note(&conn, Some(a), "background", "做前端三年，在学 Rust", "", 9).unwrap();
         assert!(agent_note(&conn, Some(9999), "background", "x", "", 9).is_err());
-        assert_eq!(notes(&conn).unwrap().iter().filter(|n| n.kind == "background").count(), 1);
+        assert_eq!(
+            notes(&conn)
+                .unwrap()
+                .iter()
+                .filter(|n| n.kind == "background")
+                .count(),
+            1
+        );
         delete_note(&conn, a).unwrap();
         note_verdict(&conn, &item, "对了", &right, 6).unwrap();
         assert_eq!(notes(&conn).unwrap()[0].content, "我老把通知和请求弄混");
@@ -985,14 +1168,27 @@ mod tests {
     fn 划线变成题_进复习队列_忽略的不提醒也不算分() {
         let conn = db();
         conn.execute("INSERT INTO annotations VALUES ('a1', 'd', 'highlight', '通知没有 id 字段，服务端收到后不会回任何东西。', '', 10)", []).unwrap();
-        conn.execute("INSERT INTO annotations VALUES ('a2', 'd', 'highlight', '太短', '', 11)", []).unwrap();
+        conn.execute(
+            "INSERT INTO annotations VALUES ('a2', 'd', 'highlight', '太短', '', 11)",
+            [],
+        )
+        .unwrap();
         let marks = pending_marks(&conn, "b", 10).unwrap();
         assert_eq!(marks.len(), 1);
         let reply = r#"{"items":[{"n":1,"concept":"通知","question":"通知为什么收不到响应？","rubric":["没有 id"]},{"n":9,"concept":"x","question":"y","rubric":["z"]}]}"#;
         assert_eq!(save_mark_items(&conn, "b", &marks, reply, 100).unwrap(), 1);
         assert!(pending_marks(&conn, "b", 10).unwrap().is_empty());
         assert_eq!(due_items(&conn, Some("b"), 100, 10).unwrap().len(), 1);
-        assert_eq!(trip(&conn, "b", 0).unwrap(), Trip { highlights: 2, recalled: 0, partial: 0, lapsed: 0, pending_marks: 0 });
+        assert_eq!(
+            trip(&conn, "b", 0).unwrap(),
+            Trip {
+                highlights: 2,
+                recalled: 0,
+                partial: 0,
+                lapsed: 0,
+                pending_marks: 0
+            }
+        );
         // 划线出的题不属于哪一段
         assert!(unit_mastery(&conn, "d", 100).unwrap().is_empty());
 

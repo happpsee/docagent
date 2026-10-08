@@ -26,7 +26,11 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
 
 /// 同一个位置（精确到 2.5%）、同样多的材料算同一份
 pub fn key(doc_id: &str, fraction: f64, notes: &str) -> String {
-    format!("{doc_id}:{}:{}", (fraction * 40.0).floor() as i64, notes.len())
+    format!(
+        "{doc_id}:{}:{}",
+        (fraction * 40.0).floor() as i64,
+        notes.len()
+    )
 }
 
 pub fn cached(conn: &Connection, book_id: &str, key: &str) -> Result<Option<String>> {

@@ -149,12 +149,25 @@ fn handle_memory(conn: &Arc<Mutex<Connection>>, body: &str) -> Result<serde_json
             if !crate::learn::NOTE_KINDS.contains(&kind.as_str()) {
                 anyhow::bail!("kind 只能是 {} 之一", crate::learn::NOTE_KINDS.join(" / "));
             }
-            let content: String = req.content.unwrap_or_default().trim().chars().take(300).collect();
+            let content: String = req
+                .content
+                .unwrap_or_default()
+                .trim()
+                .chars()
+                .take(300)
+                .collect();
             if content.is_empty() {
                 anyhow::bail!("内容是空的");
             }
-            let evidence: String = req.evidence.unwrap_or_default().trim().chars().take(200).collect();
-            let id = crate::learn::agent_note(&conn, req.id, &kind, &content, &evidence, db::now())?;
+            let evidence: String = req
+                .evidence
+                .unwrap_or_default()
+                .trim()
+                .chars()
+                .take(200)
+                .collect();
+            let id =
+                crate::learn::agent_note(&conn, req.id, &kind, &content, &evidence, db::now())?;
             Ok(serde_json::json!({ "id": id }))
         }
         "forget" => {
