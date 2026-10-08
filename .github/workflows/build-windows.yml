@@ -49,15 +49,19 @@ jobs:
         run: bun install
 
       # 文件名必须是 docagent-agent-<target-triple>.exe，Tauri 的 externalBin 按这个约定找。
-      # --windows-hide-console：免得起 sidecar 时弹一个黑框
+      # --windows-hide-console：免得起 sidecar 时弹一个黑框。
+      # 先建目录：src-tauri/binaries 在 .gitignore 里，刚检出的仓库没有这个目录，
+      # 不建的话 bun 会以 "could not open output directory" 直接失败。
       - name: 编译 Windows 版智能体进程
         working-directory: sidecar
-        run: >-
-          bun build --compile --minify --bytecode
-          --windows-hide-console
-          --windows-icon=../src-tauri/icons/icon.ico
-          --outfile ../src-tauri/binaries/docagent-agent-x86_64-pc-windows-msvc.exe
-          agent.ts
+        shell: bash
+        run: |
+          mkdir -p ../src-tauri/binaries
+          bun build --compile --minify --bytecode \
+            --windows-hide-console \
+            --windows-icon=../src-tauri/icons/icon.ico \
+            --outfile ../src-tauri/binaries/docagent-agent-x86_64-pc-windows-msvc.exe \
+            agent.ts
 
       # macOS 的 dmg / app 目标在 Windows 上不适用，用 --bundles 指定只出 NSIS 安装器
       - name: 打包 Windows 安装包
