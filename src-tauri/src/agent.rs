@@ -43,7 +43,8 @@ fn command() -> Result<Command> {
     // 发布包：sidecar 在主程序旁边
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let bundled = dir.join("docagent-agent");
+            // Windows 上这个文件叫 docagent-agent.exe
+            let bundled = dir.join(format!("docagent-agent{}", std::env::consts::EXE_SUFFIX));
             if bundled.exists() {
                 return Ok(Command::new(bundled));
             }

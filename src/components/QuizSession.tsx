@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { BookOpen, Check, GraduationCap, Loader2, MessageCircleQuestion, X } from "lucide-react";
 import * as api from "@/lib/api";
+import { MOD } from "@/lib/keys";
 import type { QuizItem, QuizResult } from "@/lib/types";
 
 const GRADE: Record<QuizResult["grade"], { name: string; tone: string }> = {
@@ -151,7 +152,7 @@ export function QuizSession(p: {
                 <textarea
                   ref={box}
                   className="mt-3 h-28 w-full resize-none rounded-lg border border-hairline bg-bg px-3 py-2 text-[13px] leading-relaxed text-text outline-none placeholder:text-text-4 focus:border-accent"
-                  placeholder="用自己的话答，不用和原文一样。⌘↩ 提交"
+                  placeholder={`用自己的话答，不用和原文一样。${MOD}↩ 提交`}
                   value={answer}
                   disabled={busy}
                   onChange={(e) => setAnswer(e.target.value)}

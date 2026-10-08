@@ -7,3 +7,9 @@
 /src-tauri/binaries
 /sidecar/node_modules
 /refs
+
+# 提交材料：文档和清单入库，安装包与压缩包不入库（几十 MB，会撑坏仓库）
+/提交包.zip
+/Shixi-submission-ascii.zip
+/提交材料/*.dmg
+/提交材料/*.zip

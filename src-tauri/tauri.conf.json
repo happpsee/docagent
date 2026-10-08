@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "DocAgent",
+  "productName": "时习",
   "version": "0.1.0",
   "identifier": "dev.local.docagent",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "DocAgent",
+        "title": "时习",
         "width": 1200,
         "height": 800,
         "minWidth": 900,
@@ -37,8 +37,8 @@
       "icons/icon.ico"
     ],
     "copyright": "AGPL-3.0",
-    "shortDescription": "本地文档智能体工作台",
-    "longDescription": "资料不出本机的文档问答工作台：本地索引、带引用溯源的回答、可审批的工具调用。",
+    "shortDescription": "一个会考你的阅读器",
+    "longDescription": "读完，真的学会。读完一段自动出题、对照原文逐条批改、按记忆曲线排复习；数据全在本机，用你自己的模型接口。",
     "externalBin": [
       "binaries/docagent-agent"
     ]

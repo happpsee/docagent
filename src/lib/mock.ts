@@ -114,7 +114,7 @@ const sessions = [
 
 const store: Record<string, unknown> = {
   get_setting: JSON.stringify({ baseUrl: "https://api.deepseek.com/anthropic", apiKey: "demo", model: "deepseek-flash", topK: 6, workspace: "/Users/Admin/Desktop/awemesome" }),
-  db_info: { docs: 5, books: 4, chunks: 103, sessions: 5, dbPath: "~/Library/…/docagent.db", dbSizeBytes: 5_400_000, saveDir: "~/Documents/DocAgent" },
+  db_info: { docs: 5, books: 4, chunks: 103, sessions: 5, dbPath: "~/Library/…/docagent.db", dbSizeBytes: 5_400_000, saveDir: "~/Documents/时习" },
 };
 
 const notes: Annotation[] = [];

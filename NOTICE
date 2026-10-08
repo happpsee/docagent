@@ -1,4 +1,4 @@
-DocAgent
+时习（工程代号 docagent）
 
 界面的设计系统与部分基础组件来自 ArcReel（AGPL-3.0）：
   - src/index.css（主题 token、玻璃面板、按钮等样式）

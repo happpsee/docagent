@@ -114,7 +114,7 @@ export function Sidebar(p: Props) {
     <aside className="flex w-[264px] shrink-0 flex-col border-r border-hairline bg-bg-grad-b/60">
       <div className="px-3 pb-1 pt-3.5">
         <div className="flex items-center px-2">
-          <span className="flex-1 text-[14px] font-semibold tracking-tight text-text">DocAgent</span>
+          <span className="flex-1 text-[14px] font-semibold tracking-tight text-text">时习</span>
           <button
             className="grid h-6 w-6 place-items-center rounded-md text-text-4 hover:bg-nav-card hover:text-text"
             aria-label="收起侧栏"

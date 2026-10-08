@@ -1,4 +1,4 @@
-//! DocAgent：本地文档智能体工作台。
+//! 时习：一个会考你的阅读器（工程代号 docagent）。
 //!
 //! 进程划分：
 //! - Rust（这里）：SQLite 存储（书、文档、向量索引、会话）、文件读写、管理 sidecar
@@ -58,7 +58,7 @@ pub fn run() {
                 .path()
                 .document_dir()
                 .unwrap_or_else(|_| dir.clone())
-                .join("DocAgent");
+                .join("时习");
             let api = server::start(conn.clone(), save_dir.clone())?;
 
             app.manage(AppState {

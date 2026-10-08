@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { BookOpenText, Copy, Highlighter, MessageSquareQuote, NotebookPen, Search, Trash2, Underline, Waves } from "lucide-react";
 import type { Annotation, HighlightColor, HighlightStyle } from "@/lib/types";
+import { MOD } from "@/lib/keys";
 import { HL } from "./engine";
 import type { SelectionAction } from "./Reader";
 import { FigureCard, type Figure } from "./XRay";
@@ -106,7 +107,7 @@ export function SelectionPopup(p: {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             rows={4}
-            placeholder="写下你的想法…  ⌘↵ 保存"
+            placeholder={`写下你的想法…  ${MOD}↵ 保存`}
             className="w-full resize-none rounded-md border border-hairline-strong bg-bg px-2 py-1.5 text-[13px] text-text outline-none focus:border-accent"
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {

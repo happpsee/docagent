@@ -557,7 +557,7 @@ function approvalCopy(name: string, input: Record<string, unknown>): { title: st
     case "save_note":
       return {
         title: "允许保存这个文件吗？",
-        note: `会写到「文稿/DocAgent/${String(input.filename ?? "")}」`,
+        note: `会写到「文稿/时习/${String(input.filename ?? "")}」`,
         body: String(input.content ?? "").slice(0, 1500),
       };
     default:

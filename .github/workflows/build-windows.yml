@@ -1,0 +1,71 @@
+name: Build Windows installer
+
+# Windows 的安装包只能在 Windows 上编译（需要 MSVC 工具链与 WebView2），
+# 没有从 macOS 交叉编译的路径，所以这一份放在 windows-latest 的 runner 上出。
+#
+# 触发方式：推送到下面的分支会自动跑，也可以在 Actions 页面手动触发。
+# 产物在本次运行的 Artifacts 里，名字是 shixi-windows-nsis。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, feat/agent-sdk]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "提交材料/**"
+
+jobs:
+  windows:
+    name: Windows 安装包 (NSIS)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # 智能体进程是 bun 编译出来的单文件，Windows 版要在 Windows 上编
+      - name: 安装 Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 安装智能体进程依赖
+        working-directory: sidecar
+        run: bun install
+
+      # 文件名必须是 docagent-agent-<target-triple>.exe，Tauri 的 externalBin 按这个约定找。
+      # --windows-hide-console：免得起 sidecar 时弹一个黑框
+      - name: 编译 Windows 版智能体进程
+        working-directory: sidecar
+        run: >-
+          bun build --compile --minify --bytecode
+          --windows-hide-console
+          --windows-icon=../src-tauri/icons/icon.ico
+          --outfile ../src-tauri/binaries/docagent-agent-x86_64-pc-windows-msvc.exe
+          agent.ts
+
+      # macOS 的 dmg / app 目标在 Windows 上不适用，用 --bundles 指定只出 NSIS 安装器
+      - name: 打包 Windows 安装包
+        run: pnpm tauri build --bundles nsis
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: shixi-windows-nsis
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error

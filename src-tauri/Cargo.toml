@@ -34,8 +34,6 @@ walkdir = "2.5.0"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 mobi = "0.8.0"
 image = { version = "0.25.6", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
-tantivy = "0.24.2"
-tantivy-jieba = "0.20.0"
 jieba-rs = "0.11.0"
 ureq = { version = "2", features = ["json"] }
 rs-fsrs = "1.2.1"

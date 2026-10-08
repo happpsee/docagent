@@ -136,7 +136,7 @@ function pluginFor(kind: "user" | "project", dir: string): { type: "local"; path
     mkdirSync(`${root}/.claude-plugin`, { recursive: true });
     writeFileSync(
       `${root}/.claude-plugin/plugin.json`,
-      JSON.stringify({ name: kind === "user" ? "user" : "folder", version: "1.0.0", description: `DocAgent ${kind} skills` }),
+      JSON.stringify({ name: kind === "user" ? "user" : "folder", version: "1.0.0", description: `时习 ${kind} skills` }),
     );
     symlinkSync(`${dir}/skills`, `${root}/skills`);
     return { type: "local", path: root, skipMcpDiscovery: true };
@@ -926,7 +926,7 @@ function docTools(ask: Ask) {
       ),
       tool(
         "save_note",
-        "把内容保存成本地文件（固定存到「文稿/DocAgent」）。会先征求用户同意。",
+        "把内容保存成本地文件（固定存到「文稿/时习」）。会先征求用户同意。",
         { filename: z.string().describe("文件名，如 合同要点.md"), content: z.string() },
         async ({ filename, content }) => {
           // 审批放在这里而不是交给 SDK 的 canUseTool：端到端测试发现进程内 MCP 工具
@@ -941,7 +941,7 @@ function docTools(ask: Ask) {
   });
 }
 
-const RULES = `你运行在一个叫 DocAgent 的桌面应用里，是用户的通用助手：可以读写本地文件、运行命令、联网搜索、访问网页、派子代理，也可以检索用户的书架、操作用户正在看的书。
+const RULES = `你运行在一个叫时习的桌面应用里，是用户的通用助手：可以读写本地文件、运行命令、联网搜索、访问网页、派子代理，也可以检索用户的书架、操作用户正在看的书。
 
 关于用户的书架（search_docs）：
 - 书架上的一本书可以只有一个文件，也可以是一个文件夹里的多个文件——每个文件是这本书的「一篇」。检索结果的出处写成《书名》或《书名 · 篇名》，页码 / 第几节是那一篇之内的。

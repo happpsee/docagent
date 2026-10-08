@@ -184,14 +184,46 @@ pub async fn relocate_book(
     Ok(true)
 }
 
-/// 在访达里显示一个文件或文件夹（选中它，不打开）
+/// 在系统文件管理器里选中一个路径：macOS 用 `open -R`，Windows 用 `explorer /select,`
+fn select_in_file_manager(path: &str) -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = std::process::Command::new("explorer");
+        // explorer 要求写成 /select,<路径>，逗号后面不能加空格
+        cmd.arg(format!("/select,{path}"));
+        cmd
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg("-R").arg(path);
+        cmd
+    }
+}
+
+/// 用系统默认程序打开一个文件夹：macOS 用 `open`，Windows 用 `cmd /C start`
+fn open_in_file_manager(path: &str) -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = std::process::Command::new("cmd");
+        // start 的第一个参数是窗口标题，给空串，免得多出来的引号被当成路径
+        cmd.args(["/C", "start", ""]).arg(path);
+        cmd
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg(path);
+        cmd
+    }
+}
+
+/// 在文件管理器里显示一个文件或文件夹（选中它，不打开）
 fn reveal(path: &str) -> Result<(), String> {
     if !Path::new(path).exists() {
         return Err("原文件找不到了".to_string());
     }
-    std::process::Command::new("open")
-        .arg("-R")
-        .arg(path)
+    select_in_file_manager(path)
         .spawn()
         .map(|_| ())
         .map_err(|err| format!("打不开 {path}：{err}"))
@@ -1183,7 +1215,7 @@ pub fn agent_send(state: State<'_, AppState>, payload: serde_json::Value) -> Res
 
 // ---------- 扩展配置（技能、MCP） ----------
 
-const CONFIG_README: &str = r#"# DocAgent 配置目录
+const CONFIG_README: &str = r#"# 时习 配置目录
 
 这里放技能和 MCP 服务的配置。用户目录下的（~/.docagent）对所有对话生效；
 工作文件夹里的（<文件夹>/.docagent）只在选了那个文件夹时生效，同名时覆盖用户级。
@@ -1242,15 +1274,14 @@ pub fn ensure_config_dir(app: AppHandle, dir: Option<String>) -> Result<String, 
     Ok(root.to_string_lossy().to_string())
 }
 
-/// 在访达里打开一个文件夹
+/// 在文件管理器里打开一个文件夹
 #[tauri::command(async)]
 pub fn open_path(path: String) -> Result<(), String> {
     // 只开文件夹：对文件执行 open 等于运行它（.app、.command）
     if !Path::new(&path).is_dir() {
         return Err(format!("不是一个文件夹：{path}"));
     }
-    std::process::Command::new("open")
-        .arg(&path)
+    open_in_file_manager(&path)
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("打不开 {path}：{e}"))

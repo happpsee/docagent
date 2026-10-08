@@ -1,4 +1,5 @@
 import type { CoachSignal, LearnOverview, QuizUnit, XRayUnit } from "@/lib/types";
+import { MOD } from "@/lib/keys";
 import { colorCode } from "./codeColor";
 import { needOf, useReadTracker } from "./readTime";
 import { GraphView } from "./Graph";
@@ -1206,7 +1207,7 @@ export function Reader({
                   不改了
                 </button>
                 <button className="rounded-md bg-accent px-3 py-1 text-white disabled:opacity-60" disabled={savingDraft} onClick={() => void saveEdit()}>
-                  {savingDraft ? "保存中…" : "保存  ⌘S"}
+                  {savingDraft ? "保存中…" : `保存  ${MOD}S`}
                 </button>
               </div>
               <textarea
