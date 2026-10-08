@@ -102,7 +102,7 @@
 </tr>
 <tr>
 <td><strong>作品形态</strong></td>
-<td>macOS 桌面应用（本地运行，非网页服务）</td>
+<td>macOS 与 Windows 桌面应用（本地运行，非网页服务）</td>
 </tr>
 <tr>
 <td><strong>技术栈</strong></td>
@@ -205,7 +205,7 @@
 <li><strong>通用智能体能力</strong>：与 Claude Code 同一套工具（读写本地文件、跑命令、联网搜索、派子代理），支持技能（Skill）与 MCP 服务，所有触碰外部世界的操作都要用户点头。</li>
 </ul>
 <h3>1.4 作品形态与技术规模</h3>
-<p>桌面应用（macOS，Apple 芯片），单机运行，不依赖任何自建服务器。</p>
+<p>桌面应用（macOS 与 Windows），单机运行，不依赖任何自建服务器。</p>
 <table>
 <thead>
 <tr>
@@ -517,11 +517,21 @@
 <hr>
 <h2>三、作品安装说明</h2>
 <h3>3.1 安装包方式（推荐，评审用这条）</h3>
-<p><strong>系统要求</strong>：Apple 芯片（arm64）的 Mac，macOS 10.13 及以上（安装包内声明的最低系统版本）。</p>
+<p><strong>系统要求与下载</strong>：作品提供 macOS 与 Windows 两个平台的安装包，均在 <a href="https://github.com/happpsee/docagent/releases/latest">https://github.com/happpsee/docagent/releases/latest</a> 下载（不需要注册或登录；安装包也随提交材料一并提供）。</p>
+<p><strong>macOS 版</strong>（Apple 芯片，macOS 10.13 及以上）</p>
 <ol>
-<li>取得安装包 <code>时习_0.1.0_aarch64.dmg</code>（约 41 MB）。</li>
+<li>取得安装包 <code>Shixi_0.1.0_aarch64.dmg</code>（约 41 MB）。</li>
 <li>双击打开，将 <strong>时习</strong> 拖入「应用程序」。</li>
 <li><strong>首次打开</strong>：因作品未做苹果开发者签名，双击后如提示「无法打开」，请到 <strong>系统设置 → 隐私与安全性</strong>，在下方找到时习的提示，点击 <strong>「仍要打开」</strong>，再次确认即可。此操作只需一次。</li>
+</ol>
+<p><strong>Windows 版</strong>（64 位 Windows 10 1809 及以上，或 Windows 11）</p>
+<ol>
+<li>取得安装包 <code>Shixi_0.1.0_x64-setup.exe</code>（约 41 MB）。</li>
+<li>双击运行，按向导完成安装，之后从开始菜单启动「时习」。</li>
+<li><strong>首次运行</strong>：若出现「Windows 已保护你的电脑」提示，点击「更多信息」，再点「仍要运行」。这是因为作品未购买代码签名证书，不是文件有问题。</li>
+</ol>
+<p><strong>两个平台共同的首次配置</strong></p>
+<ol start="4">
 <li><strong>首次使用需配置模型</strong>：打开应用后，点左下角 <strong>设置 → 模型设置</strong>，添加一家模型提供商并填入 API Key 与模型名（作品不内置任何 API Key，也不收取任何费用）。支持 DeepSeek、Kimi、智谱、Anthropic，以及任何 Anthropic 兼容接口；填好后点「测试连接」确认可用。</li>
 <li><strong>（可选）配置向量接口</strong>：若要启用语义检索，在同一设置页填写向量接口的地址、Key 与模型名；<strong>不配置也可正常使用</strong>，此时检索走中文全文检索。</li>
 <li><strong>（可选）演示数据</strong>：将仓库 <code>test-docs/</code> 下的四个示例文件（<code>采购合同.pdf</code>、<code>采购合同.md</code>、<code>服务协议.md</code>、<code>示例小说.epub</code>）直接拖入窗口即可导入。</li>
@@ -839,12 +849,12 @@ DOCAGENT_TEST_KEY=sk-... cargo test --test e2e -- --ignored --nocapture
 </tr>
 <tr>
 <td>持续集成</td>
-<td><code>.github/workflows/ci.yml</code></td>
-<td>Rust（fmt / clippy / test，macOS）与前端（typecheck / test / build，Ubuntu）双流程</td>
+<td><code>.github/workflows/</code></td>
+<td>两条流程：<code>ci.yml</code> 在 macOS 上跑 Rust（fmt / clippy / test）、在 Ubuntu 上跑前端（typecheck / test / build）；<code>build-windows.yml</code> 在 windows-latest 上编译 Windows 版智能体进程并打包 NSIS 安装包</td>
 </tr>
 </tbody></table>
 <p><strong>测试分布</strong>：110 个 Rust 用例集中在真正会算错的地方——文档解析与分块（4 + 5）、书架归类与拆分（16）、检索与防剧透界线（6 + 6）、透视（10）、出题批改与排期（6）、本地接口（7）、库升级（4）等。测试用例名使用中文整句描述行为，例如「防剧透_读到的位置之后的内容搜不出来」「多篇的书_一篇接一篇做_进度按整本书算」，失败时无需查代码即可定位问题。</p>
-<p><strong>需如实说明的工程状态</strong>：<code>cargo fmt --all -- --check</code> 当前尚有格式差异（涉及 6 个源文件），提交前应执行 <code>cargo fmt --all</code> 统一格式；这不影响编译、测试与运行结果。前端三大组件（主界面、阅读器、对话面板）目前只有逻辑层单元测试，尚无组件级测试。</p>
+<p><strong>需如实说明的工程状态</strong>：前端三大组件（主界面、阅读器、对话面板）目前只有逻辑层单元测试，尚无组件级测试。</p>
 <h3>7.3 已知限制（如实列出）</h3>
 <ul>
 <li>出题与批改的质量取决于用户配置的模型；批改偏严是有意设计，觉得判错了可以点回原文自行核对。</li>
@@ -854,8 +864,8 @@ DOCAGENT_TEST_KEY=sk-... cargo test --test e2e -- --ignored --nocapture
 <li>扫描版 PDF 没有文字层：能阅读、能加书签，但无法检索、无法划线，也出不了题。</li>
 <li>带 DRM 的电子书无法打开。</li>
 <li>未提供朗读、翻译、词典、云同步功能。</li>
-<li>API Key 明文存储；macOS 安装包未做代码签名。</li>
-<li><strong>作品目前仅在 macOS（Apple 芯片）上完成打包与验证</strong>，未提供 Windows / Linux 安装包。</li>
+<li>API Key 明文存储；macOS 与 Windows 的安装包都未做代码签名。</li>
+<li><strong>Windows 安装包由持续集成在 windows-latest 上构建产出，已确认产物是合法的 NSIS 安装器（PE 可执行文件）；但尚未在 Windows 实机上安装并走查全部功能</strong>。未提供 Linux 安装包。</li>
 </ul>
 <h3>7.4 与赛道评分项的对应关系</h3>
 <table>
