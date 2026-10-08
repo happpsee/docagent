@@ -13,3 +13,7 @@
 /Shixi-submission-ascii.zip
 /提交材料/*.dmg
 /提交材料/*.zip
+
+# 本地编辑器配置与残留锁文件，不入库
+.claude/
+bun.lock
