@@ -114,12 +114,13 @@
 
 ## 跑起来
 
-需要 Rust、Node 22+、pnpm、bun。目前只在 macOS（Apple 芯片）上打过包。
+需要 Rust、Node 22+、pnpm、bun。macOS（Apple 芯片）与 Windows（64 位）安装包见 [GitHub Releases](https://github.com/happpsee/docagent/releases)。Windows 安装包由仓库中的 GitHub Actions 流程构建。
 
 ```bash
 git clone https://github.com/happpsee/docagent.git
 cd docagent
 pnpm install && (cd sidecar && bun install)
+mkdir -p src-tauri/binaries       # 全新克隆时此目录不存在
 (cd sidecar && bun run compile)   # 把助手进程编成单文件，约 75 MB
 cp src-tauri/binaries/docagent-agent src-tauri/binaries/docagent-agent-$(rustc -vV | sed -n "s/host: //p")
 pnpm tauri dev
@@ -227,3 +228,5 @@ DOCAGENT_TEST_KEY=sk-... cargo test --test e2e -- --ignored --nocapture
 ## 许可
 
 AGPL-3.0。界面的设计系统来自 ArcReel，排版引擎是 foliate-js（MIT），详见 [NOTICE](NOTICE)。
+
+源码、第三方组件和演示数据的说明见 [源代码及数据来源说明](docs/源代码及数据来源说明.md)。对话链路使用闭源的 Claude Agent SDK，未将其列为开源组件。

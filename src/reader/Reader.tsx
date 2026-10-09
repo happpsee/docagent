@@ -42,6 +42,7 @@ import { PrefsPopover } from "./PrefsPopover";
 import { notesMarkdown } from "./export";
 import { readBoundaries } from "@/lib/scope";
 import { figuresOf, lookup, useXRay, visibleUnits, XRayPanel } from "./XRay";
+import { reportCurrentUnit } from "./unitNotification";
 
 export type SelectionAction = "ask" | "explain" | "related";
 
@@ -904,7 +905,9 @@ export function Reader({
   const { read: readUnits, touch, secondsOn } = useReadTracker(doc.id, quizUnits, { unit: unitHere, fraction: loc?.fraction ?? 0 });
   touchRef.current = touch;
   onUnitRef.current = onUnit;
-  useEffect(() => onUnitRef.current(unitHere), [unitHere]);
+  useEffect(() => {
+    reportCurrentUnit(onUnitRef.current, unitHere);
+  }, [unitHere]);
   // 往回翻、划线、问助手，都记在当时所在的那一段上：交给教练判断「是不是卡住了」
   const tally = useRef(new Map<number, { backs: number; highlights: number; asks: number }>());
   const bump = (what: "backs" | "highlights" | "asks") => {

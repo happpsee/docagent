@@ -704,7 +704,7 @@ function hitTarget(ask: Ask, ref: number): Target | string {
 function docTools(ask: Ask) {
   return createSdkMcpServer({
     name: "docagent",
-    version: "0.1.0",
+    version: "0.1.1",
     tools: [
       tool(
         "search_docs",
